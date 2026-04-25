@@ -1,0 +1,223 @@
+@Tutorial(time: 30) {
+    @Intro(title: "Reacting to Dice Configuration") {
+        Build a configurable dice roller that automatically re-rolls whenever the player changes the dice type or count. You will learn how to declare dependencies, choose the right refresh policy, and wire SwiftUI pickers to reactive streams — resulting in a fully functional application.
+    }
+
+    @Section(title: "Setting Up the Dice Service") {
+        @ContentAndMedia {
+            Begin from the same pattern as Tutorial 1 — a `DiceService` that rolls a single D6. The fetch is identical; what changes is where the range comes from.
+
+            Currently, the range `1...6` is hardcoded. The objective is to replace it with a value that arrives from an `AsyncStream<Int>`. When that stream emits a new number of sides, the data source re-rolls automatically. Silo calls this upstream stream a *dependency*.
+        }
+
+        @Steps {
+            @Step {
+                Create `DiceService.swift`. The structure mirrors `DiceRoller` from Tutorial 1 — a `DataSource<[Int]>` whose fetch returns a single random roll. `[Int]` is an `Array`, so no `emptyValue` is needed.
+
+                @Code(name: "DiceService.swift", file: "DiceService-01.swift")
+            }
+
+            @Step {
+                Accept a `sides: AsyncStream<Int>` in the initialiser. Wrap it with `.dependency(.eager)` and pass it to `dataSource()`. The fetch closure now receives the current sides value as a parameter — replace the hardcoded `6` with the stream's current value.
+
+                With `.eager`, Silo re-rolls immediately whenever `sides` emits, even before any subscriber has appeared on `rolls.values`.
+
+                @Code(name: "DiceService.swift", file: "DiceService-02.swift")
+            }
+        }
+    }
+
+    @Section(title: "Choosing the Right Refresh Policy") {
+        @ContentAndMedia {
+            The `.eager` policy re-rolls even when no view is watching, resulting in unnecessary computation. Switch to `.lazy` so re-rolls only happen while an active subscriber is present.
+
+            `.lazy` defers the re-roll rather than dropping it. If `sides` emits while no subscriber is present, Silo remembers the pending change and fires the re-roll the moment the first subscriber arrives — results are always current when the view appears.
+        }
+
+        @Steps {
+            @Step {
+                Change `.dependency(.eager)` to `.dependency(.lazy)`. This single word controls when Silo re-rolls relative to subscriber presence.
+
+                @Code(name: "DiceService.swift", file: "DiceService-03.swift")
+            }
+
+            @Step {
+                Add `clear: true` to the dependency. When the dice type changes, Silo immediately emits an empty array before the new roll arrives — so the view never shows D6 results while a D20 roll is in flight.
+
+                Without `clear: true`, the previous results remain visible until replaced by the new ones. For a dice type change, this is confusing; for other dependencies, retaining the previous value during the transition may be preferable. This distinction is explored in the next section.
+
+                @Code(name: "DiceService.swift", file: "DiceService-04.swift")
+            }
+        }
+    }
+
+    @Section(title: "Adding a Second Dependency") {
+        @ContentAndMedia {
+            Add a `count` stream so the player can roll multiple dice at once. When either `sides` or `count` changes, the service re-rolls. Both values are delivered to the fetch closure simultaneously.
+
+            Silo holds the first re-roll until *all* dependencies have emitted at least once. The fetch closure is always called with a complete, valid set of inputs.
+
+            Note that `count` omits `clear: true`. Changing from 2d20 to 3d20 keeps the previous two rolls visible while the new set loads — a less disruptive transition. Changing the dice type (`sides`) still clears immediately because previous results are irrelevant for a different die.
+        }
+
+        @Steps {
+            @Step {
+                Add `count: AsyncStream<Int>` alongside `sides`. Pass both to `dataSource()` as separate dependency arguments. The fetch closure now receives both `sides` and `count`; use them to produce the full set of rolls.
+
+                @Code(name: "DiceService.swift", file: "DiceService-05.swift")
+            }
+        }
+    }
+
+    @Section(title: "Bridging Streams to SwiftUI") {
+        @ContentAndMedia {
+            `DiceService` is driven by `AsyncStream` values, not SwiftUI state. `RollViewModel` owns the streams and acts as the bridge: it creates stream/continuation pairs, initialises `DiceService` with them, and exposes simple methods for the view to call.
+
+            `AsyncStream.makeStream(of:)` returns both the stream (the read-end, passed to `DiceService`) and the continuation (the write-end, kept by `RollViewModel`). Calling `.yield()` on a continuation pushes a new value into the stream, triggering a re-roll.
+
+            Seeding initial values in `init` is important: `DiceService` will not make its first roll until both dependencies have emitted at least once. Yielding `6` and `1` immediately ensures the first roll happens as soon as the view subscribes.
+        }
+
+        @Steps {
+            @Step {
+                Create `RollViewModel.swift`. Use `AsyncStream.makeStream(of:)` to create stream/continuation pairs for `sides` and `count`. Initialise `DiceService` with the streams, then immediately yield the starting values so both dependencies emit before the view appears.
+
+                @Code(name: "RollViewModel.swift", file: "RollViewModel-01.swift")
+            }
+
+            @Step {
+                Add `selectSides(_:)` and `selectCount(_:)` methods that call `.yield()` on the appropriate continuation. Also make `service` private and expose `rolls` as a computed property and `reroll()` as a convenience method — the view has no need to access the service directly.
+
+                @Code(name: "RollViewModel.swift", file: "RollViewModel-02.swift")
+            }
+        }
+    }
+
+    @Section(title: "Building the Roll View") {
+        @ContentAndMedia {
+            Build the SwiftUI view around `RollViewModel`. Because `RollViewModel` owns both the streams and the `DiceService`, `RollView` needs no parameters — `@State private var viewModel = RollViewModel()` is the only initialisation required and the view compiles standalone at every step.
+
+            The Re-roll button calls `viewModel.reroll()`, which in turn calls `refresh(clear: true)` on the data source. This is the same pattern from Tutorial 1, now applied alongside automatic dependency-driven re-rolls.
+        }
+
+        @Steps {
+            @Step {
+                Create `RollView.swift` with a `RollViewModel` stored in `@State`. The view is already fully self-contained and can be previewed.
+
+                @Code(name: "RollView.swift", file: "RollView-01.swift") {
+                    @Image(source: "RollView-01.png", alt: "Placeholder view showing the text 'Dice Roller'")
+                }
+            }
+
+            @Step {
+                Add `@State` properties for `rolls` and `isRolling`. Subscribe to `viewModel.rolls.valueWithState` in `.task`. Display each die result in a `List` with a running total, a `ProgressView` overlay for the initial load, and a Re-roll button pinned to the bottom that calls `viewModel.reroll()`.
+
+                @Code(name: "RollView.swift", file: "RollView-02.swift") {
+                    @Image(source: "RollView-02.png", alt: "Roll view showing a single die result and a Re-roll button")
+                }
+            }
+
+            @Step {
+                Add `@State` properties for `selectedSides` and `selectedCount`. Move the rolls into their own `Section` and add a `"Configuration"` section above it containing two `Picker` rows. Inside a `List`, `Picker` renders as a tappable row that shows the current value inline — no toolbar is needed. The pickers update SwiftUI state, but do not yet feed into `RollViewModel` — the dice configuration does not change until the final step.
+
+                @Code(name: "RollView.swift", file: "RollView-03.swift") {
+                    @Image(source: "RollView-03.png", alt: "Roll view with a Configuration section showing Sides and Count pickers above the roll result")
+                }
+            }
+
+            @Step {
+                Add `.onChange` modifiers for `selectedSides` and `selectedCount` that call `viewModel.selectSides` and `viewModel.selectCount`. Each call yields a new value into the stream, which triggers an automatic re-roll — completing the SwiftUI picker → continuation → dependency → re-roll loop.
+
+                @Code(name: "RollView.swift", file: "RollView-04.swift") {
+                    @Image(source: "RollView-04.png", alt: "Roll view showing four D12 results with a total, and the Configuration section showing D12 and 4 selected")
+                }
+            }
+        }
+    }
+
+    @Assessments {
+        @MultipleChoice {
+            With `.lazy` policy, when does the first roll happen?
+
+            @Choice(isCorrect: false) {
+                Immediately when the `DataSource` is created by `.build()`.
+
+                @Justification(reaction: "That is `.eager` behaviour.") {
+                    The `.eager` policy re-rolls as soon as the dependency emits, regardless of subscribers. With `.lazy`, no roll happens until a subscriber arrives.
+                }
+            }
+
+            @Choice(isCorrect: false) {
+                The first time `refresh()` is called manually.
+
+                @Justification(reaction: "Not quite.") {
+                    With `.lazy`, the first roll is triggered automatically when the first subscriber appears — calling `refresh()` manually is not required.
+                }
+            }
+
+            @Choice(isCorrect: true) {
+                When the first subscriber appears on `values` or `valueWithState`.
+
+                @Justification(reaction: "Correct!") {
+                    `.lazy` defers the roll until a subscriber is present. If the dependency already emitted before the subscriber arrived, the pending refresh fires immediately when the first subscriber appears.
+                }
+            }
+        }
+
+        @MultipleChoice {
+            You have two dependencies. The `sides` stream emits immediately; the `count` stream takes 2 seconds to emit its first value. When does the first roll happen?
+
+            @Choice(isCorrect: false) {
+                Immediately after `sides` emits.
+
+                @Justification(reaction: "Not quite.") {
+                    The data source waits until every dependency has emitted at least once. Even though `sides` is ready, `count` must emit before the first roll can proceed.
+                }
+            }
+
+            @Choice(isCorrect: true) {
+                After `count` emits its first value, 2 seconds later.
+
+                @Justification(reaction: "Exactly right!") {
+                    Silo holds the first roll until all dependencies have values. This guarantees the fetch closure always receives a complete, well-defined set of inputs.
+                }
+            }
+
+            @Choice(isCorrect: false) {
+                The roll never happens — you must call `refresh()` manually when using multiple dependencies.
+
+                @Justification(reaction: "Incorrect.") {
+                    Multiple dependencies work just like a single dependency. Once all have emitted, the data source rolls automatically according to the configured policy.
+                }
+            }
+        }
+
+        @MultipleChoice {
+            `sides` uses `.dependency(.lazy, clear: true)` and `count` uses `.dependency(.lazy)`. What is the visible difference in the UI when the player changes dice type versus changing dice count?
+
+            @Choice(isCorrect: true) {
+                Changing dice type shows a loading indicator while new results load; changing dice count keeps the previous rolls visible until new ones arrive.
+
+                @Justification(reaction: "Correct!") {
+                    `clear: true` on the `sides` dependency immediately empties the cached results, so the view transitions to its "empty + refreshing" state and shows a loading indicator. Without `clear: true`, the `count` change leaves the previous rolls in place — a less disruptive transition when only the number of dice changes.
+                }
+            }
+
+            @Choice(isCorrect: false) {
+                Both changes show a loading indicator — `clear: true` is required for the loading indicator to work at all.
+
+                @Justification(reaction: "Not quite.") {
+                    The loading indicator is driven by `isRefreshing`, not by `clear: true`. `clear: true` controls whether the previous *value* is cleared; the source is marked as refreshing for any in-flight fetch regardless.
+                }
+            }
+
+            @Choice(isCorrect: false) {
+                Neither change shows a loading indicator — a separate state variable would be required to track that.
+
+                @Justification(reaction: "Incorrect.") {
+                    `isRefreshing` is part of `DataSourceState` and is delivered by the `valueWithState` stream for every in-flight fetch. The `isRolling` state property in `RollView` is driven directly by it.
+                }
+            }
+        }
+    }
+}

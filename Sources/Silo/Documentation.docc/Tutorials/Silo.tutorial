@@ -1,0 +1,21 @@
+@Tutorials(name: "Silo") {
+    @Intro(title: "Build Reactive Data Layers with Silo") {
+        These two hands-on tutorials take you from a basic data source to a fully reactive, dependency-driven data layer. By the end, you will know how to handle caching, retry, auto-refresh, and upstream state changes in real SwiftUI apps.
+    }
+
+    @Chapter(name: "Your First Data Source") {
+        Build a D6 dice roller from scratch, learn the core `DataSource` lifecycle, how to drive a SwiftUI view from a reactive stream, and how to configure a source to refresh itself automatically while it has active subscribers.
+
+        @Image(source: "chapter-d6.svg", alt: "Dice icon representing the D6 dice roller tutorial")
+
+        @TutorialReference(tutorial: "doc:BuildingAD6DiceRoller")
+    }
+
+    @Chapter(name: "Reactive Dependencies") {
+        Build a configurable dice roller that re-rolls automatically when the player changes the dice type or count, learn the difference between `.eager` and `.lazy` refresh policies, how `clear: true` prevents stale results, and how to combine multiple dependency streams.
+
+        @Image(source: "chapter-dice-sides.svg", alt: "Dice icon representing the reactive dependencies tutorial")
+
+        @TutorialReference(tutorial: "doc:ReactiveDependencies")
+    }
+}

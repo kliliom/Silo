@@ -1,0 +1,9 @@
+#! /bin/bash
+
+set -e
+
+# Set working directory to the repository root
+cd "${0%/*}/.."
+
+# Run linting tool
+swift format lint --strict --parallel --recursive Sources Tests

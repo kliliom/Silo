@@ -1,0 +1,59 @@
+#!/bin/bash
+# Improve doc comments in a Swift source file using Claude.
+# Rewrites the file in-place with improved inline and DocC documentation.
+#
+# Usage: .bin/doc-improve <file.swift>
+#
+# To improve all source files:
+#   find Sources/Silo -name "*.swift" -not -path "*/Resources/*" \
+#     | xargs -I{} .bin/doc-improve {}
+
+set -e
+cd "${0%/*}/.."
+
+if [ -z "$1" ]; then
+    echo "Usage: .bin/doc-improve <file.swift>"
+    exit 1
+fi
+
+FILE="$1"
+
+if [ ! -f "$FILE" ]; then
+    echo "Error: $FILE not found"
+    exit 1
+fi
+
+if ! command -v claude &> /dev/null; then
+    echo "Error: claude CLI not found"
+    exit 1
+fi
+
+echo "Improving: $FILE"
+
+CONTENT=$(cat "$FILE")
+
+PROMPT='Improve the Swift documentation in the file below.
+
+Rules:
+- Doc comment first line: concise statement of what the symbol is or does. Avoid "A ...", "This is a ...", "The ...". Lead with the noun or verb.
+- Use DocC markup: backtick symbol cross-references (`Symbol`), ```swift code blocks, ## section headers only when the comment is long enough to warrant them.
+- Add a realistic usage example for every non-trivial public API — show a real scenario, not a toy example.
+- Document parameters and return values only when their purpose is not obvious from the name and type.
+- Do not add doc comments to private or internal symbols.
+- Do not modify doc comments that are already clear, accurate, and well-formatted.
+- Tone: professional and direct. No filler phrases ("Note that...", "It is important to...", "Please be aware...").
+
+Output ONLY the complete Swift file. No explanation. No markdown wrapper. No preamble.
+
+---
+'"$CONTENT"
+
+IMPROVED=$(claude -p "$PROMPT")
+
+if [ -z "$IMPROVED" ]; then
+    echo "Error: no output from claude"
+    exit 1
+fi
+
+printf '%s\n' "$IMPROVED" > "$FILE"
+echo "Done: $FILE"

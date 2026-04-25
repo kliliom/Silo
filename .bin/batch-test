@@ -1,0 +1,53 @@
+#! /bin/bash
+
+# Run the full test suite N times. Stops on first failure.
+# Usage: .bin/batch-test [count]   (default: 100)
+#
+# Build once up front, then reuse the build. Writes each iteration's output to
+# a log file so the terminal stays readable; on failure, the log path is
+# printed.
+
+set -u
+
+cd "${0%/*}/.."
+
+count="${1:-100}"
+logdir=".build/batch-test"
+mkdir -p "$logdir"
+
+echo "Building tests..."
+if ! swift build --build-tests > "$logdir/build.log" 2>&1; then
+  echo "Build failed. See $logdir/build.log"
+  exit 1
+fi
+
+pass=0
+fail=0
+start=$(date +%s)
+
+for i in $(seq 1 "$count"); do
+  log="$logdir/run-$(printf '%03d' "$i").log"
+  printf "[%3d/%s] " "$i" "$count"
+  if swift test --skip-build > "$log" 2>&1; then
+    pass=$((pass + 1))
+    echo "pass"
+    rm -f "$log"
+  else
+    fail=$((fail + 1))
+    echo "FAIL — $log"
+    echo
+    echo "--- tail of $log ---"
+    tail -40 "$log"
+    break
+  fi
+done
+
+end=$(date +%s)
+elapsed=$((end - start))
+
+echo
+echo "Ran: $((pass + fail))   Passed: $pass   Failed: $fail   Elapsed: ${elapsed}s"
+
+if [ "$fail" -gt 0 ]; then
+  exit 1
+fi

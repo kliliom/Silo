@@ -1,0 +1,167 @@
+@Tutorial(time: 15) {
+    @Intro(title: "Rolling a D6") {
+        In this tutorial, you will build a D6 dice roller using Silo. The fetch is a single line — `Int.random(in: 1...6)` — so every concept you encounter is focused on Silo, with no boilerplate distractions.
+
+        You will create a ``DataSource`` backed by a random number, drive a SwiftUI view from its reactive stream, wire up a Roll button, and configure the die to roll itself automatically while the view is on screen.
+    }
+
+    @Section(title: "Creating the Data Source") {
+        @ContentAndMedia {
+            Create a `DiceRoller` service that holds a ``DataSource`` for the last roll. Because the current roll may be absent before the die is first rolled, `Int?` is the appropriate type — `nil` means "not yet rolled."
+
+            `Optional` is one of Silo's built-in empty types, so no `emptyValue` closure is needed. The source starts as `nil` and updates to a number each time `refresh()` is called.
+        }
+
+        @Steps {
+            @Step {
+                Create `DiceRoller.swift`. Define an empty `DiceRoller` class marked `@MainActor` with a `shared` singleton.
+
+                @Code(name: "DiceRoller.swift", file: "DiceRoller-01.swift")
+            }
+
+            @Step {
+                Add the `lastRoll` ``DataSource``. The fetch closure returns `Int.random(in: 1...6)`. The `onError` handler returns `.keep` so that any error preserves the previous roll value.
+
+                The `Task.sleep` delay is artificial — it simulates a slow fetch so the `ProgressView` added in the next section remains visible during development. A real fetch would call a network API here instead.
+
+                @Code(name: "DiceRoller.swift", file: "DiceRoller-02.swift")
+            }
+        }
+    }
+
+    @Section(title: "Building the Dice View") {
+        @ContentAndMedia {
+            Subscribe to ``DataSource/valueWithState`` in a SwiftUI view. This stream delivers a snapshot on every change — value or loading state — so one subscription drives both the roll display and the `ProgressView`.
+
+            The `.task` modifier iterates the stream for as long as the view is on screen. When the view disappears, the task is cancelled automatically — a behaviour that becomes relevant when auto-roll is introduced in the next section.
+        }
+
+        @Steps {
+            @Step {
+                Create `DiceView.swift` with a reference to `DiceRoller.shared` and a placeholder body.
+
+                @Code(name: "DiceView.swift", file: "DiceView-01.swift") {
+                    @Image(source: "DiceView-01.png", alt: "Placeholder view showing the text 'Dice Roller'")
+                }
+            }
+
+            @Step {
+                Add `@State` properties for the current roll and loading state. In `.task`, iterate `roller.lastRoll.valueWithState` and update state from each snapshot. Show the roll as a large number — `nil` renders as `"—"` before the first roll — and a `ProgressView` while the source is refreshing.
+
+                @Code(name: "DiceView.swift", file: "DiceView-02.swift") {
+                    @Image(source: "DiceView-02.png", alt: "Dice view showing a dash before the first roll")
+                }
+            }
+
+            @Step {
+                Add a Roll button that calls `refresh(clear: true)`. Passing `clear: true` sets `lastRoll` back to `nil` immediately, so the display returns to `"—"` while the next number is being generated — a clear visual cue that a new roll is in flight.
+
+                @Code(name: "DiceView.swift", file: "DiceView-03.swift") {
+                    @Image(source: "DiceView-03.png", alt: "Dice view showing a roll result with a Roll button below")
+                }
+            }
+        }
+    }
+
+    @Section(title: "Rolling Automatically") {
+        @ContentAndMedia {
+            Chain `.autoRefresh(.seconds(2))` to roll the die automatically every two seconds while the view is visible. The timer is subscriber-driven: it starts when the first subscriber appears on `lastRoll.values` and stops when the last one disappears.
+
+            Because `.task` in `DiceView` cancels when the view leaves the screen, the auto-roll timer stops automatically — no manual cleanup is required.
+        }
+
+        @Steps {
+            @Step {
+                Chain `.autoRefresh(.seconds(2))` before `.build()`. The view requires no changes: the existing `valueWithState` subscription picks up each automatic roll as it arrives.
+
+                @Code(name: "DiceRoller.swift", file: "DiceRoller-03.swift")
+            }
+        }
+    }
+
+    @Assessments {
+        @MultipleChoice {
+            `lastRoll` is typed as `DataSource<Int?>`. What does `nil` represent?
+
+            @Choice(isCorrect: false) {
+                An error occurred during the last roll.
+
+                @Justification(reaction: "Not quite.") {
+                    Errors are handled separately by the `onError` closure, not encoded as `nil`. The `nil` value comes from Silo's built-in empty state for `Optional` types — it simply means the source has never been fetched.
+                }
+            }
+
+            @Choice(isCorrect: true) {
+                The die has not been rolled yet, or the value was cleared.
+
+                @Justification(reaction: "Correct!") {
+                    `Optional` is one of Silo's built-in empty types. The source starts as `nil` and stays `nil` until `refresh()` is first called — or after `refresh(clear: true)` resets it while a new roll is in flight.
+                }
+            }
+
+            @Choice(isCorrect: false) {
+                Auto-roll is disabled.
+
+                @Justification(reaction: "Incorrect.") {
+                    Auto-roll is configured via `.autoRefresh()` on the builder, not encoded in the value type. `nil` means the source has no value yet, regardless of whether auto-roll is on or off.
+                }
+            }
+        }
+
+        @MultipleChoice {
+            You call `refresh(clear: true)` and then `refresh(clear: true)` again immediately. How many rolls happen?
+
+            @Choice(isCorrect: false) {
+                Two rolls — one for each call.
+
+                @Justification(reaction: "Not quite.") {
+                    Concurrent `refresh()` calls are deduplicated. The second caller joins the in-flight task started by the first and awaits its result — only one roll ever happens.
+                }
+            }
+
+            @Choice(isCorrect: true) {
+                One roll — the second call joins the in-flight task.
+
+                @Justification(reaction: "Exactly right!") {
+                    Silo deduplicates concurrent refreshes. The second `refresh()` call detects an active task and awaits it instead of starting a new one. Both callers receive the same result.
+                }
+            }
+
+            @Choice(isCorrect: false) {
+                Zero rolls — the second call cancels the first.
+
+                @Justification(reaction: "Incorrect.") {
+                    Calls are deduplicated, not cancelled. The in-flight task runs to completion and both callers receive the result.
+                }
+            }
+        }
+
+        @MultipleChoice {
+            You configure `.autoRefresh(.seconds(2))`. The user navigates away and `DiceView` disappears. What happens to the timer?
+
+            @Choice(isCorrect: true) {
+                The timer stops automatically because there are no more subscribers.
+
+                @Justification(reaction: "Correct!") {
+                    Auto-refresh is subscriber-driven. The `.task` modifier in `DiceView` cancels when the view disappears, removing the last subscriber from `lastRoll.values`. With no subscribers, the timer stops — no manual cleanup is needed.
+                }
+            }
+
+            @Choice(isCorrect: false) {
+                The timer keeps running in the background indefinitely.
+
+                @Justification(reaction: "Not quite.") {
+                    The timer is subscriber-driven, not a free-running background process. It only runs while at least one subscriber is active on the `values` stream.
+                }
+            }
+
+            @Choice(isCorrect: false) {
+                The timer stops, but only if you call `invalidate()` on the `DiceRoller`.
+
+                @Justification(reaction: "Incorrect.") {
+                    No manual invalidation is needed. Silo tracks the subscriber count automatically and stops the timer when it reaches zero.
+                }
+            }
+        }
+    }
+}

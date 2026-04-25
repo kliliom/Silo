@@ -1,0 +1,374 @@
+# Silo
+
+> A Swift 6 library for managing asynchronous data sources with reactive streams, smart caching, and configurable refresh policies. Built for iOS 17+, macOS 14+, tvOS 17+, watchOS 10+, and visionOS 1+. Requires Swift 6.0+ and uses `@MainActor` for all data source operations.
+
+Silo provides a `DataSource<Value>` type that wraps async fetch operations with reactive `AsyncStream`-based emissions. Data sources start empty and require an explicit `refresh()` call to fetch. The `.values` stream immediately yields the current cached value (empty on first subscription), then emits updates when data changes. Dependencies, debouncing, throttling, TTL, and retry logic integrate seamlessly via a builder pattern.
+
+**Critical constraints:**
+- All `DataSource` operations run on `@MainActor` — do not attempt to use from background actors
+- Data sources start in an empty state (nil for Optional, [] for Array, etc.) — you must call `refresh()` to fetch initial data
+- Duration does not have a `.minutes()` method — use `.seconds(300)` for 5 minutes, not `.minutes(5)`
+- The `.values` stream yields the current cached value immediately upon subscription, before any fetch occurs
+- Multiple concurrent `refresh()` calls automatically deduplicate to a single fetch operation
+- Auto-refresh only runs while there are active subscribers to the `.values` stream
+
+**Dependency refresh policies:**
+- `.eager`: Refresh immediately when dependency changes, even without subscribers
+- `.lazy`: Defers refresh until first subscriber arrives if dependency changed while unobserved (smart optimization for preventing wasted work)
+- `.manual`: Never auto-refresh on dependency changes (manual refresh only)
+
+## Getting Started
+
+### Installation
+
+Add to Package.swift:
+```swift
+dependencies: [
+    .package(url: "https://github.com/kliliom/Silo.git", from: "1.0.0")
+]
+```
+
+### Basic usage pattern
+
+```swift
+import Silo
+
+@MainActor
+class UserService {
+    let userSource: DataSource<User?>
+
+    init() {
+        userSource = dataSource {
+            try await API.getUser()
+        } onError: { error in
+            .keep  // Keep cached value on error
+        }
+        .ttl(.seconds(300))  // Cache for 5 minutes
+        .distinct()          // Only emit when value changes
+        .build()
+    }
+
+    // Stream of values
+    var user: AsyncStream<User?> {
+        userSource.values
+    }
+
+    // Manually trigger refresh
+    func refresh() async throws {
+        try await userSource.refresh()
+    }
+}
+
+// Usage
+let service = UserService()
+
+// Observe updates
+Task {
+    for await user in service.user {
+        updateUI(with: user)
+    }
+}
+
+// Fetch data
+try await service.refresh()
+```
+
+### Common footguns
+
+1. **Forgetting to refresh**: Data sources don't auto-fetch on creation. You'll see the empty value until you call `refresh()`.
+
+2. **Duration API**: Use `.seconds(N)` not `.minutes(N)`. Duration doesn't have a minutes method.
+   ```swift
+   .ttl(.seconds(300))  // ✅ Correct
+   .ttl(.minutes(5))    // ❌ Compiler error
+   ```
+
+3. **MainActor requirement**: All DataSource operations must run on MainActor. Don't create or use from background tasks without proper isolation.
+
+4. **Lazy vs eager confusion**: `.lazy` policy doesn't mean "lazy refresh when subscriber appears" — it means "if dependency changed while unobserved, refresh when subscriber appears". If dependency changes while observed, refresh happens immediately.
+
+5. **Distinct comparisons**: `.distinct()` requires `Equatable`. For custom types, either conform to `Equatable` or use `.distinct { old, new in ... }` with custom comparator.
+
+## API Reference
+
+### Core types
+
+- `DataSource<Value>` — Main reactive data source class
+  - `.values` — AsyncStream of data values
+  - `.values(bufferingPolicy:)` — AsyncStream with custom buffering (.unbounded, .bufferingNewest, .bufferingOldest)
+  - `.state` — AsyncStream of DataSourceState (isRefreshing, isEmpty)
+  - `.state(bufferingPolicy:)` — State stream with custom buffering
+  - `.valueWithState` — AsyncStream of paired value+state snapshots (use when you need both in lockstep)
+  - `.valueWithState(bufferingPolicy:)` — Paired stream with custom buffering
+  - `.refresh(clear:)` — Fetch new data
+  - `.clear()` — Reset to empty state
+  - `.cancelRefresh(clear:)` — Cancel in-flight fetch
+  - `.stopAutoRefresh()`, `.resumeAutoRefresh()`, `.restartAutoRefresh(immediate:)`
+  - `.terminate()` — Finish all streams and cancel in-flight work; called automatically on deinit
+
+- `DataSourceValueWithState<Value>` — Snapshot pairing `value` and `state`; emitted by `.valueWithState`
+
+- `BeforeFetchError` — Wraps errors thrown by `.beforeFetch()` hooks so `onError` can distinguish pre-fetch failures from fetch failures via `.underlyingError`
+
+- `FetchErrorAction` — Returned from top-level `onError`; controls cache after all retries are exhausted
+  - `.keep` — Preserve cached value
+  - `.clear` — Reset cache to empty value
+
+- `RetryErrorAction` — Returned from per-attempt `onError` in `.retry()`; controls whether to attempt the next retry
+  - `.retry` — Wait the configured delay and try again
+  - `.stop` — Stop retrying; defer cache decision to top-level `onError`
+
+- `RefreshPolicy` — Controls dependency-triggered refreshes
+  - `.eager` — Refresh immediately on change
+  - `.lazy` — Defer refresh until subscriber arrives if dependency changed while unobserved
+  - `.manual` — Manual refresh only
+
+- `RetryStrategy` — Configures retry behavior
+  - `.exponentialBackoff(maxAttempts:initialDelay:multiplier:maxDelay:)`
+  - `.linearBackoff(maxAttempts:initialDelay:increment:)`
+  - `.custom(maxAttempts:delayCalculator:)`
+
+### Builder API
+
+Create with `dataSource()` function, configure with chainable methods, finalize with `.build()`:
+
+```swift
+let source = dataSource {
+    try await API.getData()
+} onError: { _ in .keep } emptyValue: { "empty" }
+.ttl(.seconds(300), clear: true)
+.throttle(.seconds(1), last: false)
+.debounce(.milliseconds(300))
+.autoRefresh(.seconds(60))
+.retry(strategy: .exponentialBackoff(maxAttempts: 3, initialDelay: .seconds(1)))
+.distinct()
+.requires(NetworkPrerequisite())
+.build()
+```
+
+**Builder methods:**
+- `.ttl(_:clear:)` — Cache duration and optional auto-clear
+- `.throttle(_:last:)` — Limit refresh frequency
+- `.debounce(_:)` — Wait for calls to settle
+- `.autoRefresh(_:)` — Periodic refresh while observed
+- `.retry(count:delay:)` — Simple retry
+- `.retry(count:delay:onError:)` — Retry with error handler
+- `.retry(strategy:onError:)` — Custom retry strategy
+- `.distinct()` — Filter duplicates (Equatable types)
+- `.distinct(_:)` — Filter with custom comparator
+- `.requires(_:)` — Add prerequisite check
+- `.beforeFetch(_:)` — Run an async closure before each fetch; throws are wrapped in `BeforeFetchError`
+- `.beforeFetch(refresh:)` — Refresh another `DataSource` before each fetch
+
+### Dependencies
+
+Create dependent data sources that auto-refresh when upstream values change:
+
+```swift
+let userSource = dataSource { ... }.build()
+
+// Single dependency
+let postsSource = dataSource(
+    userSource.values.dependency(.eager, clear: true)
+) { user in
+    guard let user = user else { return [] }
+    return try await API.getPosts(userId: user.id)
+} onError: { _ in .keep }
+.build()
+
+// Multiple dependencies
+let resultsSource = dataSource(
+    querySource.values.dependency(.eager),
+    filtersSource.values.dependency(.eager)
+) { query, filters in
+    try await API.search(query: query, filters: filters)
+} onError: { _ in .keep }
+.debounce(.milliseconds(300))
+.build()
+```
+
+**Dependency method:**
+- `AsyncStream.dependency(_:clear:)` — Convert AsyncStream to DataSourceDependency
+
+## Examples
+
+### Search with debounce and dependencies
+
+```swift
+@MainActor
+class SearchViewModel {
+    private let querySubject = AsyncStream<String>.makeStream()
+    let query: AsyncStream<String>.Continuation
+
+    let results: DataSource<[SearchResult]>
+
+    init() {
+        self.query = querySubject.continuation
+
+        self.results = dataSource(
+            querySubject.stream.dependency(.eager, clear: true)
+        ) { query in
+            guard !query.isEmpty else { return [] }
+            return try await SearchAPI.search(query: query)
+        } onError: { _ in .keep }
+        .debounce(.milliseconds(300))  // Wait for typing to stop
+        .retry(count: 2)
+        .distinct()
+        .build()
+    }
+}
+```
+
+### Polling with auto-refresh
+
+```swift
+let statusSource = dataSource {
+    try await API.getJobStatus()
+} onError: { _ in .keep } emptyValue: {
+    JobStatus.unknown
+}
+.autoRefresh(.seconds(5))  // Poll every 5 seconds while observed
+.ttl(.seconds(3))           // Cache for 3 seconds
+.build()
+
+// Auto-refresh starts when first subscriber appears
+Task {
+    for await status in statusSource.values {
+        if status.isComplete {
+            statusSource.stopAutoRefresh()
+            break
+        }
+    }
+}
+```
+
+### Retry with exponential backoff
+
+```swift
+let apiSource = dataSource {
+    try await API.fetchCriticalData()
+} onError: { error in
+    // Log but keep cached value for resilience
+    logger.error("Fetch failed: \(error)")
+    return .keep
+}
+.retry(
+    strategy: .exponentialBackoff(
+        maxAttempts: 5,
+        initialDelay: .seconds(1),
+        multiplier: 2.0,
+        maxDelay: .seconds(30)
+    ),
+    onError: { error in
+        // Stop retrying on auth errors; cache outcome is decided by the top-level onError
+        if case APIError.unauthorized = error {
+            return .stop
+        }
+        return .retry
+    }
+)
+.build()
+```
+
+### SwiftUI integration
+
+```swift
+@MainActor
+@Observable
+class FeedViewModel {
+    let feedSource: DataSource<[Post]>
+    var posts: [Post] = []
+    var isLoading = false
+
+    init() {
+        feedSource = dataSource {
+            try await API.getFeed()
+        } onError: { _ in .keep }
+        .ttl(.seconds(60))
+        .distinct()
+        .build()
+    }
+
+    func observe() {
+        Task {
+            for await posts in feedSource.values {
+                self.posts = posts
+            }
+        }
+        Task {
+            for await state in feedSource.state {
+                self.isLoading = state.isRefreshing
+            }
+        }
+    }
+
+    func refresh() async {
+        try? await feedSource.refresh()
+    }
+}
+
+struct FeedView: View {
+    @State var viewModel = FeedViewModel()
+
+    var body: some View {
+        List(viewModel.posts) { post in
+            PostRow(post: post)
+        }
+        .overlay {
+            if viewModel.isLoading {
+                ProgressView()
+            }
+        }
+        .task {
+            viewModel.observe()
+            await viewModel.refresh()
+        }
+        .refreshable {
+            await viewModel.refresh()
+        }
+    }
+}
+```
+
+## File Reference
+
+Primary source files (all public APIs are fully documented):
+- `Sources/Silo/DataSource.swift` — Core DataSource class with detailed lifecycle documentation
+- `Sources/Silo/DataSourceBuilder.swift` — Builder pattern implementation and all dataSource() overloads for Optional/Array/Dictionary
+- `Sources/Silo/DataSourceDependency.swift` — Dependency mechanism with AsyncStream.dependency() extension
+- `Sources/Silo/DataSourceState.swift` — State tracking for UI integration
+- `Sources/Silo/DataSourceValueWithState.swift` — Paired value+state snapshot type
+- `Sources/Silo/DataSourceRefreshPrerequisite.swift` — Protocol for conditional fetching
+- `Sources/Silo/RefreshPolicy.swift` — Eager/lazy/manual policies
+- `Sources/Silo/FetchErrorAction.swift` — `.keep`/`.clear` returned from top-level `onError`
+- `Sources/Silo/RetryErrorAction.swift` — `.retry`/`.stop` returned from per-attempt retry `onError`
+- `Sources/Silo/RetryStrategy.swift` — Retry strategy implementations
+- `Sources/Silo/BeforeFetchError.swift` — Wraps errors from `.beforeFetch()` hooks
+- `Sources/Silo/Duration+Extensions.swift` — Duration helpers used internally
+- `README.md` — Comprehensive usage guide with all features
+
+DocC documentation (long-form articles and tutorials):
+- `Sources/Silo/Documentation.docc/Silo.md` — Top-level catalog
+- `Sources/Silo/Documentation.docc/GettingStarted.md` — Onboarding guide
+- `Sources/Silo/Documentation.docc/Caching.md` — TTL and cache lifecycle
+- `Sources/Silo/Documentation.docc/TimeControls.md` — Throttle, debounce, auto-refresh
+- `Sources/Silo/Documentation.docc/Dependencies.md` — Dependency wiring and refresh policies
+- `Sources/Silo/Documentation.docc/ErrorHandling.md` — `FetchErrorAction` and `RetryErrorAction` semantics
+- `Sources/Silo/Documentation.docc/Prerequisites.md` — Gating fetches with prerequisites
+- `Sources/Silo/Documentation.docc/Tutorials/` — Step-by-step tutorials (D6 dice roller, reactive dependencies)
+
+Test files showing real usage patterns:
+- `Tests/SiloTests/DependencyTests.swift` — Demonstrates eager vs lazy behavior, multiple dependencies
+- `Tests/SiloTests/BasicFetchTests.swift` — Core fetch/refresh patterns
+- `Tests/SiloTests/ErrorHandlingTests.swift` — Error action behaviors
+- `Tests/SiloTests/RetryTests.swift` — Retry strategy examples
+- `Tests/SiloTests/DebounceTests.swift` — Debounce integration with dependencies
+- `Tests/SiloTests/TTLTests.swift` — TTL and caching behavior
+- `Tests/SiloTests/BeforeFetchTests.swift` — `.beforeFetch()` hook behavior
+- `Tests/SiloTests/ValueWithStateTests.swift` — Paired value+state stream behavior
+
+## Optional
+
+Advanced topics and internals:
+- `Sources/Silo/DependencyCoordinator.swift` — Internal dependency coordination (not part of public API, but useful for understanding how dependency tracking works under the hood)
+- `Package.swift` — Swift 6 platform requirements

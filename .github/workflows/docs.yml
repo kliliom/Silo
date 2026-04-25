@@ -1,0 +1,53 @@
+name: Deploy DocC to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: docc-pages
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: macos-26
+    env:
+      BUILDING_DOCC: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.4.1.app
+
+      - name: Resolve packages
+        run: swift package resolve
+
+      - name: Generate DocC
+        run: |
+          swift package \
+            --allow-writing-to-directory ./docs \
+            generate-documentation \
+            --target Silo \
+            --disable-indexing \
+            --transform-for-static-hosting \
+            --hosting-base-path Silo \
+            --output-path ./docs
+
+      - name: Write root redirect
+        run: |
+          cat > ./docs/index.html <<'EOF'
+          <!DOCTYPE html>
+          <meta http-equiv="refresh" content="0; url=./documentation/silo/">
+          EOF
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs
+          publish_branch: gh-pages
+          force_orphan: true

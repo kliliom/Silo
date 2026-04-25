@@ -1,0 +1,10 @@
+#! /bin/bash
+
+set -e
+
+# Set working directory to the repository root
+cd "${0%/*}/.."
+
+# Run linting tool
+swift format format -i --parallel --recursive Sources Tests
+swift format format -i --parallel --recursive --configuration .swift-format-docs Sources/Silo/Documentation.docc

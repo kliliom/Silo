@@ -1,0 +1,72 @@
+#!/bin/bash
+# Scan public Swift source files for missing doc comments.
+# Usage: .bin/doc-audit [path]
+#   path: file or directory to audit (default: Sources/Silo)
+#
+# Output: file:line: declaration  (one line per undocumented symbol)
+# Fix issues with: .bin/doc-improve <file>
+
+set -e
+cd "${0%/*}/.."
+
+TARGET="${1:-Sources/Silo}"
+
+FILES=$(find "$TARGET" -name "*.swift" \
+    -not -path "*/Documentation.docc/Tutorials/Resources/*" \
+    | sort)
+
+if [ -z "$FILES" ]; then
+    echo "No Swift files found in: $TARGET"
+    exit 0
+fi
+
+FOUND=0
+while IFS= read -r FILE; do
+    RESULTS=$(awk '
+    {
+        lines[NR] = $0
+    }
+    END {
+        for (i = 1; i <= NR; i++) {
+            line = lines[i]
+            stripped = line
+            gsub(/^[[:space:]]+/, "", stripped)
+
+            # Match public declarations
+            if (stripped ~ /^public[[:space:]]+(func|var|let|class|struct|enum|protocol|typealias|subscript)/ ||
+                stripped ~ /^public[[:space:]]+(final|static|override|lazy)[[:space:]]+(func|var|let|class)/ ||
+                stripped ~ /^public[[:space:]]+init[[:space:](]/) {
+
+                has_doc = 0
+                for (j = i - 1; j >= 1 && j >= i - 20; j--) {
+                    prev = lines[j]
+                    gsub(/^[[:space:]]+/, "", prev)
+                    if (prev ~ /^\/\/\//) {
+                        has_doc = 1
+                        break
+                    } else if (prev == "" || prev ~ /^@/ || prev ~ /^\/\/[^\/]/) {
+                        continue
+                    } else {
+                        break
+                    }
+                }
+
+                if (!has_doc) {
+                    decl = stripped
+                    sub(/ \{.*$/, "", decl)
+                    printf "%s:%d: %s\n", FILENAME, i, decl
+                }
+            }
+        }
+    }
+    ' "$FILE")
+
+    if [ -n "$RESULTS" ]; then
+        echo "$RESULTS"
+        FOUND=1
+    fi
+done <<< "$FILES"
+
+if [ "$FOUND" -eq 0 ]; then
+    echo "All public symbols documented."
+fi
