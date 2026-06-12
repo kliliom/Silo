@@ -60,6 +60,62 @@ struct StateTrackingTests {
     #expect(cancelled?.isRefreshing == false)
   }
 
+  /// Verifies that `isEmpty` remains `true` when the first fetch fails with `.keep` — the cache
+  /// still holds the empty value, so reporting `isEmpty == false` would be a lie. Historically
+  /// `isEmpty` was optimistically flipped to `false` when the fetch *started* and never restored
+  /// on failure.
+  @Test("isEmpty stays true after a failed first fetch with .keep")
+  func isEmptyTrueAfterFailedFirstFetch() async throws {
+    struct FetchError: Error {}
+
+    let source = dataSource {
+      () -> String in
+      throw FetchError()
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    _ = try? await source.refresh()
+
+    var iterator = source.state.makeAsyncIterator()
+    let state = await iterator.next()
+    #expect(state?.isEmpty == true)
+    #expect(state?.isRefreshing == false)
+  }
+
+  /// Verifies that the documented `(isRefreshing: true, isEmpty: true)` "first fetch in progress"
+  /// state is observable on the `.state` stream while the very first fetch is running.
+  @Test("First fetch in progress reports isRefreshing and isEmpty both true")
+  func firstFetchInProgressState() async throws {
+    let releaseFetch = Semaphore(value: 0)
+    let source = dataSource {
+      await releaseFetch.wait()
+      return "value"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    var iterator = source.state.makeAsyncIterator()
+    _ = await iterator.next()  // initial (false, true)
+
+    Task { try? await source.refresh() }
+
+    let refreshing = await iterator.next()
+    #expect(refreshing?.isRefreshing == true)
+    #expect(refreshing?.isEmpty == true)
+
+    await releaseFetch.signal()
+    let done = await iterator.next()
+    #expect(done?.isRefreshing == false)
+    #expect(done?.isEmpty == false)
+  }
+
   /// Verifies that `state()` (the method with configurable buffering) produces the same lifecycle
   /// transitions as the `.state` property when using default buffering. The test observes initial,
   /// refreshing, and completed states through the method-returned stream and asserts each

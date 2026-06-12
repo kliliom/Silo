@@ -643,7 +643,6 @@ public final class DataSource<Value: Sendable>: Sendable {
     }
 
     isRefreshing = true
-    isEmpty = false
     emitState()
     emitValueWithState()
 

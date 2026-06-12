@@ -63,11 +63,11 @@ struct ValueWithStateTests {
 
     Task { try? await source.refresh() }
 
-    // State: refreshing started
+    // State: refreshing started — still empty until the fetch succeeds
     let refreshing = await iterator.next()
     #expect(refreshing?.value == "empty")
     #expect(refreshing?.state.isRefreshing == true)
-    #expect(refreshing?.state.isEmpty == false)
+    #expect(refreshing?.state.isEmpty == true)
 
     // Release the fetch so the value arrives
     await releaseFetch.signal()
