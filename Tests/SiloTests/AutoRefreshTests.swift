@@ -524,4 +524,51 @@ struct AutoRefreshTests {
     #expect(await state.fetchCount == 1)
     await consumer.value
   }
+
+  /// Verifies that a successful manual `refresh()` resets the auto-refresh cadence so the next
+  /// automatic tick fires a full interval after the manual fetch, not on the old schedule.
+  /// With a 300 ms interval, a manual refresh at ~150 ms must push the next tick to ~450 ms;
+  /// the old behaviour fired it at ~300 ms, fetching again right after the manual refresh.
+  @Test("Successful manual refresh resets the auto-refresh cadence")
+  func manualRefreshResetsAutoRefreshCadence() async throws {
+    actor State {
+      var fetchCount = 0
+      func increment() { fetchCount += 1 }
+    }
+    let state = State()
+
+    let source = dataSource {
+      await state.increment()
+      return await state.fetchCount
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      0
+    }
+    .autoRefresh(.milliseconds(300))
+    .build()
+
+    // Subscribing triggers the immediate first fetch and starts the timer
+    let stream = source.values
+    let consumer = Task { for await _ in stream {} }
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await state.fetchCount == 1)
+
+    // Manual refresh mid-interval — must restart the timer from here
+    try await Task.sleep(for: .milliseconds(100))
+    _ = try await source.refresh()
+    #expect(await state.fetchCount == 2)
+
+    // At ~380 ms the old schedule would already have ticked (at ~300 ms);
+    // the reset cadence ticks at ~450 ms instead
+    try await Task.sleep(for: .milliseconds(230))
+    #expect(await state.fetchCount == 2)
+
+    // The timer is still running: the rescheduled tick eventually fires
+    try await Task.sleep(for: .milliseconds(150))
+    #expect(await state.fetchCount == 3)
+
+    source.terminate()
+    await consumer.value
+  }
 }

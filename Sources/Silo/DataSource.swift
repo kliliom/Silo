@@ -713,8 +713,12 @@ public final class DataSource<Value: Sendable>: Sendable {
         // Start TTL timer
         startTTLTimer()
 
-        // Reset auto-refresh
+        // Reset the auto-refresh cadence: the next automatic tick fires a full
+        // interval after this fetch instead of on the old schedule, which could
+        // trigger a redundant fetch right after a manual refresh. The restart
+        // respects the paused flag and the subscriber gate.
         if autoRefreshInterval != nil {
+          suspendAutoRefresh()
           startAutoRefresh(immediate: false)
         }
 

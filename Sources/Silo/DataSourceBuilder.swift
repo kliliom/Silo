@@ -335,6 +335,9 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   /// while there are active subscribers to the `values` stream. The timer stops
   /// when the last subscriber terminates.
   ///
+  /// Every successful fetch — manual or automatic — resets the cadence, so the next
+  /// automatic refresh always fires a full interval after the most recent fetch.
+  ///
   /// - Parameters:
   ///   - interval: Time between automatic refreshes
   ///   - tolerance: Allowed deviation in the refresh interval timer, passed to `Task.sleep`.
