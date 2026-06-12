@@ -93,9 +93,10 @@ public final class DataSource<Value: Sendable>: Sendable {
   // In-flight request tracking
   var currentFetchTask: Task<Value, Error>?
 
-  // Timer state
-  var ttlExpiryTime: Date?
-  var throttleExpiryTime: Date?
+  // Timer state — deadlines use ContinuousClock so wall-clock changes
+  // (NTP corrections, manual time adjustments) cannot shift them
+  var ttlExpiryTime: ContinuousClock.Instant?
+  var throttleExpiryTime: ContinuousClock.Instant?
   var ttlExpiryTask: Task<Void, Never>?
   var debounceTask: Task<Void, Never>?
   var debounceCounter: Int = 0
@@ -402,7 +403,7 @@ public final class DataSource<Value: Sendable>: Sendable {
 
     // TTL: return immediately if data is fresh — no fetch, no waiting, no prerequisite checks
     if ttlDuration != nil, !isEmpty {
-      if let expiryTime = ttlExpiryTime, Date() < expiryTime {
+      if let expiryTime = ttlExpiryTime, ContinuousClock.now < expiryTime {
         return cachedValue
       }
     }
@@ -425,17 +426,17 @@ public final class DataSource<Value: Sendable>: Sendable {
 
     // Throttle: drop or queue; only runs when a fetch is actually needed
     if let throttleDuration = throttleDuration {
-      if let expiryTime = throttleExpiryTime, Date() < expiryTime {
+      if let expiryTime = throttleExpiryTime, ContinuousClock.now < expiryTime {
         if throttleLast {
-          let waitDuration = expiryTime.timeIntervalSinceNow
-          if waitDuration > 0 {
-            try await Task.sleep(for: .seconds(waitDuration), tolerance: throttleTolerance)
+          let waitDuration = expiryTime - ContinuousClock.now
+          if waitDuration > .zero {
+            try await Task.sleep(for: waitDuration, tolerance: throttleTolerance)
           }
         } else {
           return cachedValue
         }
       }
-      throttleExpiryTime = Date().addingTimeInterval(throttleDuration.timeInterval)
+      throttleExpiryTime = ContinuousClock.now.advanced(by: throttleDuration)
     }
 
     // Prerequisites: checked once per settled fetch attempt, after debounce/throttle
@@ -789,8 +790,7 @@ public final class DataSource<Value: Sendable>: Sendable {
   func startTTLTimer() {
     guard let ttlDuration = ttlDuration else { return }
 
-    let expiryTime = Date().addingTimeInterval(ttlDuration.timeInterval)
-    ttlExpiryTime = expiryTime
+    ttlExpiryTime = ContinuousClock.now.advanced(by: ttlDuration)
 
     ttlExpiryTask?.cancel()
     ttlExpiryTask = Task { [weak self] in
