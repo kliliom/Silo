@@ -196,6 +196,48 @@ struct AutoRefreshTests {
     task.cancel()
   }
 
+  /// Verifies that the `.autoRefresh` timer restarts when a new subscriber arrives after all
+  /// previous subscribers have left. Historically the last subscriber's departure set the same
+  /// paused flag as `stopAutoRefresh()`, so a second subscriber generation never got the timer
+  /// back. The fetch count must keep growing for the new subscriber.
+  @Test("Auto-refresh restarts when a new subscriber arrives after all left")
+  func autoRefreshRestartsOnResubscribe() async throws {
+    actor State {
+      var fetchCount = 0
+      func increment() { fetchCount += 1 }
+    }
+    let state = State()
+
+    let source = dataSource {
+      await state.increment()
+      return await state.fetchCount
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      0
+    }
+    .autoRefresh(.milliseconds(10))
+    .build()
+
+    // First subscriber generation
+    let task1 = Task { for await _ in source.values {} }
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(await state.fetchCount >= 1)
+
+    // Last subscriber leaves; the timer suspends
+    task1.cancel()
+    try await Task.sleep(for: .milliseconds(50))
+    let countAfterUnsub = await state.fetchCount
+
+    // Second subscriber generation — the timer must restart
+    let task2 = Task { for await _ in source.values {} }
+    try await Task.sleep(for: .milliseconds(50))
+    let countAfterResub = await state.fetchCount
+    task2.cancel()
+
+    #expect(countAfterResub > countAfterUnsub)
+  }
+
   /// Verifies that the `.autoRefresh` timer does not start when there are no active `.values` or
   /// `.valueWithState` subscribers. A `DataSource` with a 30 ms interval is built and discarded
   /// (no subscriber); after 120 ms the test asserts the fetch closure was never invoked.

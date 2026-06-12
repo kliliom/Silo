@@ -240,7 +240,7 @@ public final class DataSource<Value: Sendable>: Sendable {
           if let self = self {
             self.activeSubscriberCount -= 1
             if self.activeSubscriberCount == 0 && self.autoRefreshInterval != nil {
-              self.stopAutoRefresh()
+              self.suspendAutoRefresh()
             }
           }
         }
@@ -353,7 +353,7 @@ public final class DataSource<Value: Sendable>: Sendable {
           if let self = self {
             self.activeSubscriberCount -= 1
             if self.activeSubscriberCount == 0 && self.autoRefreshInterval != nil {
-              self.stopAutoRefresh()
+              self.suspendAutoRefresh()
             }
           }
         }
@@ -506,7 +506,9 @@ public final class DataSource<Value: Sendable>: Sendable {
   /// is not configured via `.autoRefresh()`.
   ///
   /// The timer remains stopped until `resumeAutoRefresh()` or `restartAutoRefresh()` is called.
-  /// Note that auto-refresh automatically stops when all subscribers to `values` terminate.
+  /// Note that auto-refresh also automatically suspends when all subscribers to `values`
+  /// terminate — but unlike this method, that suspension lifts on its own as soon as a new
+  /// subscriber arrives.
   ///
   /// Example:
   /// ```swift
@@ -518,6 +520,13 @@ public final class DataSource<Value: Sendable>: Sendable {
   public func stopAutoRefresh() {
     guard autoRefreshInterval != nil else { return }
     autoRefreshPaused = true
+    autoRefreshTask?.cancel()
+    autoRefreshTask = nil
+  }
+
+  /// Stops the timer when the last subscriber leaves, without marking it as user-paused —
+  /// unlike `stopAutoRefresh()`, a future subscriber restarts it.
+  func suspendAutoRefresh() {
     autoRefreshTask?.cancel()
     autoRefreshTask = nil
   }
