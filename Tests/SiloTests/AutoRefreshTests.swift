@@ -481,4 +481,47 @@ struct AutoRefreshTests {
 
     #expect(await state.fetchCount == 0)
   }
+
+  /// Verifies that releasing the last reference to an auto-refreshing source while its timer
+  /// is sleeping deallocates it promptly, instead of the sleeping timer iteration keeping the
+  /// source alive for up to a full interval and performing one final fetch whose result nobody
+  /// can observe.
+  @Test("Releasing an auto-refreshing source mid-interval does not trigger a final fetch")
+  func releasedSourceDoesNotFetchOneLastTime() async throws {
+    actor State {
+      var fetchCount = 0
+      func increment() { fetchCount += 1 }
+    }
+    let state = State()
+    let fetchOccurred = Semaphore(value: 0)
+
+    var source: DataSource<String>? = dataSource {
+      await state.increment()
+      await fetchOccurred.signal()
+      return "data"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .autoRefresh(.milliseconds(100))
+    .build()
+
+    weak let weakSource = source
+
+    // Subscribing starts the auto-refresh timer with an immediate fetch
+    let stream = source!.values
+    let consumer = Task { for await _ in stream {} }
+    await fetchOccurred.wait()
+    #expect(await state.fetchCount == 1)
+
+    // Drop the last reference while the timer is sleeping out its first interval
+    source = nil
+    try await Task.sleep(for: .milliseconds(300))
+
+    // The source deallocated without waking up for one final fetch
+    #expect(weakSource == nil)
+    #expect(await state.fetchCount == 1)
+    await consumer.value
+  }
 }

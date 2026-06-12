@@ -832,15 +832,20 @@ public final class DataSource<Value: Sendable>: Sendable {
       activeSubscriberCount > 0
     else { return }
 
+    let tolerance = autoRefreshTolerance
     autoRefreshTask = Task { [weak self] in
       if immediate {
         guard !Task.isCancelled, let self else { return }
         _ = try? await self.refresh()
       }
       while !Task.isCancelled {
-        guard let self else { return }
-        try? await Task.sleep(for: interval, tolerance: self.autoRefreshTolerance)
+        // Do not hold self across the sleep: a strong reference here would keep an
+        // otherwise-released source alive for the rest of the interval and let it
+        // perform one final fetch nobody can observe. (ARC may release a guarded
+        // binding early, but that is not guaranteed — keep it explicit.)
+        try? await Task.sleep(for: interval, tolerance: tolerance)
         if Task.isCancelled { return }
+        guard let self else { return }
         _ = try? await self.refresh()
       }
     }
