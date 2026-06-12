@@ -506,6 +506,108 @@ struct DependencyTests {
     #expect(result == "fetch-1")  // Should use last known dependency value
   }
 
+  /// Verifies that a `.lazy` dependency emission arriving *while a fetch is in flight* is not
+  /// lost. Historically the completing fetch — which read the old dependency value — cleared the
+  /// pending-refresh flag, so the new value never triggered a refresh and subscribers got stale
+  /// data. The first subscriber must now receive a refresh with the newest dependency value.
+  @Test("Lazy dependency emission during an in-flight fetch is not lost")
+  func lazyDependencyEmissionDuringFetchNotLost() async throws {
+    actor State {
+      var fetchCount = 0
+      var lastSeenValue: Int?
+      func increment() { fetchCount += 1 }
+      func setLastSeenValue(_ v: Int) { lastSeenValue = v }
+    }
+    let state = State()
+    let fetchStarted = Semaphore(value: 0)
+    let releaseFetch = Semaphore(value: 0)
+
+    let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+
+    let source = dataSource(stream.dependency(.lazy)) { value in
+      await state.increment()
+      await state.setLastSeenValue(value)
+      if await state.fetchCount == 1 {
+        await fetchStarted.signal()
+        await releaseFetch.wait()
+      }
+      return "fetch-\(value)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    // Emit with no subscribers — marks a pending lazy refresh
+    continuation.yield(1)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await state.fetchCount == 0)
+
+    // Manual refresh reads value 1 and blocks mid-fetch
+    let refreshTask = Task { _ = try? await source.refresh() }
+    await fetchStarted.wait()
+
+    // New dependency value arrives while the fetch is in flight
+    continuation.yield(2)
+    try await Task.sleep(for: .milliseconds(50))
+
+    // Fetch completes having used the old value — the pending refresh must survive
+    await releaseFetch.signal()
+    await refreshTask.value
+    #expect(await state.lastSeenValue == 1)
+
+    // First subscriber arrives — the pending refresh must fire with value 2
+    let consumer = Task { for await _ in source.values {} }
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await state.fetchCount == 2)
+    #expect(await state.lastSeenValue == 2)
+
+    consumer.cancel()
+    continuation.finish()
+  }
+
+  /// Verifies that a completed fetch still clears the pending lazy refresh when no dependency
+  /// emission happened during the fetch — the first subscriber must not trigger a redundant
+  /// second fetch.
+  @Test("Completed fetch clears the pending lazy refresh when nothing changed mid-fetch")
+  func pendingLazyRefreshClearedByCoveringFetch() async throws {
+    actor State {
+      var fetchCount = 0
+      func increment() { fetchCount += 1 }
+    }
+    let state = State()
+
+    let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+
+    let source = dataSource(stream.dependency(.lazy)) { value in
+      await state.increment()
+      return "fetch-\(value)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    // Emit with no subscribers — marks a pending lazy refresh
+    continuation.yield(1)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await state.fetchCount == 0)
+
+    // Manual refresh covers the pending value
+    _ = try await source.refresh()
+    #expect(await state.fetchCount == 1)
+
+    // First subscriber arrives — no redundant refresh may fire
+    let consumer = Task { for await _ in source.values {} }
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await state.fetchCount == 1)
+
+    consumer.cancel()
+    continuation.finish()
+  }
+
   /// Verifies that `terminate()` stops dependency observation. After termination, further
   /// emissions on the dependency stream must not trigger refreshes on the (dead) source.
   /// Historically the observer tasks were never cancelled and kept refreshing forever.

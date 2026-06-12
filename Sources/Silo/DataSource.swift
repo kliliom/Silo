@@ -678,6 +678,9 @@ public final class DataSource<Value: Sendable>: Sendable {
           }
         }
 
+        // Snapshot the dependency version so a mid-fetch emission is detectable
+        let dependencyVersion = dependencyCoordinator?.valueVersion ?? 0
+
         let newValue = try await fetchWithRetry()
 
         // A fetch closure that ignores cancellation can still complete after
@@ -709,7 +712,7 @@ public final class DataSource<Value: Sendable>: Sendable {
         }
 
         // Mark dependency refresh as completed
-        dependencyCoordinator?.markRefreshCompleted()
+        dependencyCoordinator?.markRefreshCompleted(upTo: dependencyVersion)
 
         return newValue
       } catch {

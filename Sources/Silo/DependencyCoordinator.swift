@@ -1,9 +1,13 @@
 @MainActor
 protocol DependencyCoordinating: Sendable {
+  /// Monotonic counter, bumped on every dependency emission. A fetch snapshots it to
+  /// detect emissions that happened while the fetch was in flight.
+  var valueVersion: Int { get }
+
   func start<T: Sendable>(dataSource: DataSource<T>)
   func stopObserving()
   func checkPendingLazyRefresh<T: Sendable>(dataSource: DataSource<T>) async
-  func markRefreshCompleted()
+  func markRefreshCompleted(upTo version: Int)
 }
 
 final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordinating {
@@ -14,6 +18,7 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
   var dependency: (repeat DataSourceDependency<each Dependency>)
   var valueStore: ValueStore
   var hasPendingLazyRefresh: Bool = false
+  var valueVersion: Int = 0
   var observerTasks: [Task<Void, Never>] = []
 
   init(dependency: repeat DataSourceDependency<each Dependency>) {
@@ -30,6 +35,7 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
     at targetIndex: Int,
     with newValue: T
   ) {
+    valueVersion += 1
     var index = 0
     valueStore =
       (repeat select(currentValue: each valueStore, newValue: newValue, currentIndex: &index, newIndex: targetIndex))
@@ -63,7 +69,11 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
     _ = try? await dataSource.refresh()
   }
 
-  func markRefreshCompleted() {
+  func markRefreshCompleted(upTo version: Int) {
+    // Only clear the pending flag if no dependency emitted while the fetch was in
+    // flight — a mid-fetch emission was not covered by that fetch and must still
+    // trigger a refresh when the next subscriber arrives.
+    guard version == valueVersion else { return }
     hasPendingLazyRefresh = false
   }
 
