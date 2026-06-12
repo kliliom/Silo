@@ -442,7 +442,7 @@ public final class DataSource<Value: Sendable>: Sendable {
     for prerequisite in prerequisites {
       let passed = await prerequisite.check()
       if !passed {
-        throw PrerequisiteError(message: "Prerequisite check failed")
+        throw PrerequisiteError(message: "Prerequisite check failed: \(type(of: prerequisite))")
       }
     }
 

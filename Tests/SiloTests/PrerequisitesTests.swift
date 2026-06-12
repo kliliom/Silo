@@ -42,8 +42,8 @@ struct PrerequisitesTests {
 
   /// Verifies that a `DataSourceRefreshPrerequisite` whose `check()` returns `false` blocks the
   /// fetch closure entirely. Registers an always-failing prerequisite, calls `refresh()`, and
-  /// asserts that a `PrerequisiteError` is thrown with the expected message and that the fetch
-  /// closure was never invoked.
+  /// asserts that a `PrerequisiteError` is thrown naming the failing prerequisite type and that
+  /// the fetch closure was never invoked.
   @Test("Prerequisites that fail prevent fetch")
   func prerequisitesFail() async throws {
     struct AlwaysFail: DataSourceRefreshPrerequisite {
@@ -73,7 +73,7 @@ struct PrerequisitesTests {
       _ = try await source.refresh()
       Issue.record("Expected prerequisite error")
     } catch let error as PrerequisiteError {
-      #expect(error.message == "Prerequisite check failed")
+      #expect(error.message == "Prerequisite check failed: AlwaysFail")
       #expect(await state.fetchCount == 0)
     }
   }
