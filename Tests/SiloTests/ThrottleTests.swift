@@ -281,4 +281,43 @@ struct ThrottleTests {
     _ = try await source.refresh()
     #expect(await state.fetchCount == 2)
   }
+
+  /// Verifies that a throttled drop cannot masquerade the empty value as fetched data. The first
+  /// fetch fails (opening the throttle window) and leaves the source empty; a `refresh()` inside
+  /// the window must perform a real fetch instead of silently returning `emptyValue`, because
+  /// with nothing cached there is no meaningful value to drop to.
+  @Test("Throttled drop does not return the empty value after a failed first fetch")
+  func throttleDropDoesNotMaskEmptyCache() async throws {
+    actor State {
+      var fetchCount = 0
+      func increment() -> Int {
+        fetchCount += 1
+        return fetchCount
+      }
+    }
+    let state = State()
+    struct FetchError: Error {}
+
+    let source = dataSource {
+      let attempt = await state.increment()
+      if attempt == 1 { throw FetchError() }
+      return "data-\(attempt)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .throttle(.seconds(60))
+    .build()
+
+    // First fetch fails — a throttle window opened, but the source is still empty
+    await #expect(throws: FetchError.self) {
+      try await source.refresh()
+    }
+
+    // While empty, the in-window refresh fetches for real instead of returning "empty"
+    let result = try await source.refresh()
+    #expect(result == "data-2")
+    #expect(await state.fetchCount == 2)
+  }
 }

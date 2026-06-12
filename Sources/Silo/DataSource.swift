@@ -372,6 +372,7 @@ public final class DataSource<Value: Sendable>: Sendable {
   /// 1. **TTL**: Returns the cached value immediately if still within its TTL window — no further work done.
   /// 2. **Debounce**: Waits for calls to settle; throws `CancellationError` if superseded.
   /// 3. **Throttle**: Drops (returns cached) or waits then continues, depending on `last:`.
+  ///    Only applies while cached data exists — an empty source always proceeds to fetch.
   /// 4. **Prerequisites**: Checked once per settled fetch attempt; throws ``PrerequisiteError`` if any fail.
   /// 5. **Deduplication**: Concurrent callers join the existing in-flight task.
   /// 6. **beforeFetch hooks**: Run concurrently; errors are wrapped in ``BeforeFetchError`` and abort the fetch.
@@ -422,8 +423,10 @@ public final class DataSource<Value: Sendable>: Sendable {
       }
     }
 
-    // Throttle: drop or queue; only runs when a fetch is actually needed
-    if throttleDuration != nil {
+    // Throttle: drop or queue; only applies while cached data exists — when the source
+    // is empty (e.g. the previous fetch failed) a drop would silently return the empty
+    // value as if it were fetched data, so the fetch proceeds instead
+    if throttleDuration != nil, !isEmpty {
       if let expiryTime = throttleExpiryTime, ContinuousClock.now < expiryTime {
         if throttleLast {
           let waitDuration = expiryTime - ContinuousClock.now

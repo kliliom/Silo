@@ -42,6 +42,8 @@ Two behaviours are available, selected with the `last` parameter:
 .throttle(.seconds(2), last: true) // Last caller always gets fresh data eventually
 ```
 
+> Note: Throttling only applies while cached data exists. When the source is empty — for example after the previous fetch failed — `refresh()` always proceeds to fetch, so a throttled drop can never return the empty value as if it were fetched data.
+
 **When to choose:**
 
 | | Drop (`last: false`) | Queue (`last: true`) |

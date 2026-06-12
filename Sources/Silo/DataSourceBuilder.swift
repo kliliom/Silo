@@ -269,6 +269,10 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   ///
   /// Throttling prevents excessive fetching by enforcing a minimum time between requests.
   ///
+  /// Throttling only applies while cached data exists. When the source is empty — for
+  /// example after the previous fetch failed — `refresh()` always proceeds to fetch, so a
+  /// throttled drop can never return the empty value as if it were fetched data.
+  ///
   /// - Parameters:
   ///   - duration: Minimum time that must elapse between fetches
   ///   - tolerance: Allowed deviation when waiting for the throttle window to end
