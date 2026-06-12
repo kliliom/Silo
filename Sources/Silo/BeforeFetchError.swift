@@ -23,8 +23,13 @@ public struct BeforeFetchError: Error, Sendable {
   /// The error thrown by the `beforeFetch` closure.
   public let underlyingError: any Error
 
+  /// Creates a `BeforeFetchError` wrapping the given error.
+  ///
+  /// Mostly useful in tests that exercise `onError` handlers distinguishing
+  /// pre-fetch failures from fetch failures.
+  ///
   /// - Parameter underlyingError: The error thrown by the `beforeFetch` closure.
-  init(underlyingError: any Error) {
+  public init(underlyingError: any Error) {
     self.underlyingError = underlyingError
   }
 }
