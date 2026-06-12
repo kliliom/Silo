@@ -737,18 +737,23 @@ public final class DataSource<Value: Sendable>: Sendable {
 
     do {
       let value = try await fetchTask.value
-      currentFetchTask = nil
-      isRefreshing = false
-      emitState()
-      emitValueWithState()
+      finishFetch(fetchTask)
       return value
     } catch {
-      currentFetchTask = nil
-      isRefreshing = false
-      emitState()
-      emitValueWithState()
+      finishFetch(fetchTask)
       throw error
     }
+  }
+
+  /// Clears in-flight tracking for a finished fetch task. Guarded by identity: a fetch
+  /// cancelled via `cancelRefresh()` can resume after a newer fetch has already started,
+  /// and must not clobber the newer task's tracking or its `isRefreshing` state.
+  private func finishFetch(_ fetchTask: Task<Value, Error>) {
+    guard currentFetchTask == fetchTask else { return }
+    currentFetchTask = nil
+    isRefreshing = false
+    emitState()
+    emitValueWithState()
   }
 
   func fetchWithRetry() async throws -> Value {

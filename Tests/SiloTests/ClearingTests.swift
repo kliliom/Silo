@@ -368,6 +368,69 @@ struct ClearingTests {
     #expect(await task.value)
   }
 
+  /// Verifies that a cancelled fetch resuming late cannot clobber the tracking of a newer
+  /// in-flight fetch. Fetch A is started and cancelled while blocked; a new fetch B begins;
+  /// then A's non-cooperative closure finishes and its caller resumes. A third `refresh()`
+  /// issued afterwards must join B via deduplication rather than start a parallel fetch.
+  @Test("Cancelled fetch does not clobber tracking of a newer in-flight fetch")
+  func cancelledFetchDoesNotClobberNewerFetch() async throws {
+    actor State {
+      var fetchCount = 0
+      func increment() -> Int {
+        fetchCount += 1
+        return fetchCount
+      }
+    }
+    let state = State()
+    let fetchStarted = Semaphore(value: 0)
+    let unblockFirstFetch = Semaphore(value: 0)
+    let unblockSecondFetch = Semaphore(value: 0)
+
+    let source = dataSource {
+      let attempt = await state.increment()
+      await fetchStarted.signal()
+      // Semaphore waits do not respond to cancellation
+      if attempt == 1 {
+        await unblockFirstFetch.wait()
+      } else {
+        await unblockSecondFetch.wait()
+      }
+      return "fetch-\(attempt)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    // Fetch A starts and blocks
+    let caller1 = Task { try? await source.refresh() }
+    await fetchStarted.wait()
+
+    // Cancel A while its closure is still blocked, then start fetch B
+    source.cancelRefresh()
+    let caller2 = Task { try await source.refresh() }
+    await fetchStarted.wait()
+
+    // Let A finish; its result is discarded via Task.checkCancellation and
+    // caller1 resumes in the error path while B is still in flight
+    await unblockFirstFetch.signal()
+    _ = await caller1.value
+
+    // A third refresh must deduplicate onto B, not start a parallel fetch
+    let caller3 = Task { try await source.refresh() }
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(await state.fetchCount == 2)
+
+    // Unblock twice so a (buggy) parallel third fetch cannot hang the test
+    await unblockSecondFetch.signal()
+    await unblockSecondFetch.signal()
+
+    #expect(try await caller2.value == "fetch-2")
+    #expect(try await caller3.value == "fetch-2")
+    #expect(await state.fetchCount == 2)
+  }
+
   /// Verifies that `refresh(clear: true)` emits `emptyValue` on the `.values` stream before the
   /// new fetch result arrives, giving subscribers a visible "loading" transition. After a prior
   /// fetch the test calls `refresh(clear: true)` and reads two consecutive values, asserting the
