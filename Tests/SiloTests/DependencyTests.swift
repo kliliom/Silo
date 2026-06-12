@@ -506,6 +506,70 @@ struct DependencyTests {
     #expect(result == "fetch-1")  // Should use last known dependency value
   }
 
+  /// Verifies that `terminate()` stops dependency observation. After termination, further
+  /// emissions on the dependency stream must not trigger refreshes on the (dead) source.
+  /// Historically the observer tasks were never cancelled and kept refreshing forever.
+  @Test("terminate() stops dependency-triggered refreshes")
+  func terminateStopsDependencyObservation() async throws {
+    actor State {
+      var fetchCount = 0
+      func increment() { fetchCount += 1 }
+    }
+    let state = State()
+
+    let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+
+    let source = dataSource(stream.dependency(.eager)) { value in
+      await state.increment()
+      return "fetch-\(value)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    continuation.yield(1)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await state.fetchCount == 1)
+
+    source.terminate()
+
+    continuation.yield(2)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await state.fetchCount == 1)
+
+    continuation.finish()
+  }
+
+  /// Verifies that a `DataSource` is deallocated even while its dependency stream is still alive.
+  /// Historically the observer task captured the data source strongly, so a never-finishing
+  /// dependency stream made the source immortal.
+  @Test("DataSource deallocates while its dependency stream is still alive")
+  func dataSourceDeallocatesWithLiveDependencyStream() async throws {
+    let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+
+    weak var weakSource: DataSource<String>?
+    do {
+      let source = dataSource(stream.dependency(.eager)) { value in
+        "fetch-\(value)"
+      } onError: { _ in
+        .keep
+      } emptyValue: {
+        "empty"
+      }
+      .build()
+      weakSource = source
+      _ = source  // keep alive until the end of the scope
+    }
+
+    // Give the observer task a beat to start and suspend on the (never-emitting) stream
+    try await Task.sleep(for: .milliseconds(20))
+    #expect(weakSource == nil)
+
+    continuation.finish()
+  }
+
   /// Verifies that calling `refresh()` on a dependency-backed `DataSource` before any dependency
   /// value has been emitted throws an error rather than passing `nil` to the fetch closure.
   /// A `.manual` dependency stream is created but never yielded to; the test asserts `refresh()`

@@ -605,12 +605,14 @@ public final class DataSource<Value: Sendable>: Sendable {
   ///
   /// After calling this, all `values`, `state`, and `valueWithState` streams finish,
   /// signalling end-of-sequence to their subscribers. Any in-flight `refresh()` call
-  /// is cancelled. Call this for eager resource cleanup; `deinit` calls it automatically.
+  /// is cancelled, and dependency streams are no longer observed. Call this for eager
+  /// resource cleanup; `deinit` performs the same cleanup automatically.
   ///
   /// ```swift
   /// dataSource.terminate()
   /// ```
   public func terminate() {
+    dependencyCoordinator?.stopObserving()
     currentFetchTask?.cancel()
     currentFetchTask = nil
     ttlExpiryTask?.cancel()

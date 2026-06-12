@@ -1,6 +1,7 @@
 @MainActor
 protocol DependencyCoordinating: Sendable {
   func start<T: Sendable>(dataSource: DataSource<T>)
+  func stopObserving()
   func checkPendingLazyRefresh<T: Sendable>(dataSource: DataSource<T>) async
   func markRefreshCompleted()
 }
@@ -13,10 +14,16 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
   var dependency: (repeat DataSourceDependency<each Dependency>)
   var valueStore: ValueStore
   var hasPendingLazyRefresh: Bool = false
+  var observerTasks: [Task<Void, Never>] = []
 
   init(dependency: repeat DataSourceDependency<each Dependency>) {
     self.dependency = (repeat each dependency)
     valueStore = (repeat (Optional<each Dependency>).none)
+  }
+
+  deinit {
+    // Safety net for when the owning DataSource is deallocated without terminate()
+    for task in observerTasks { task.cancel() }
   }
 
   func updateValue<T: Sendable>(
@@ -45,6 +52,11 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
       }())
   }
 
+  func stopObserving() {
+    for task in observerTasks { task.cancel() }
+    observerTasks.removeAll()
+  }
+
   func checkPendingLazyRefresh<T: Sendable>(dataSource: DataSource<T>) async {
     guard hasPendingLazyRefresh, value != nil else { return }
     hasPendingLazyRefresh = false
@@ -60,21 +72,25 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
     source: DataSourceDependency<D>,
     at index: Int
   ) {
-    Task { @MainActor in
+    // Weak captures: a long-lived dependency stream must not keep the data source
+    // (or this coordinator) alive. Strong references are only held per iteration.
+    let task = Task { @MainActor [weak self, weak dataSource] in
       for await streamValue in source.stream {
-        updateValue(at: index, with: streamValue)
+        guard let self = self, let dataSource = dataSource else { return }
+        self.updateValue(at: index, with: streamValue)
 
         // Check if we should refresh based on policy
         let shouldRefresh = dataSource.shouldRefreshForPolicy(source.policy)
 
-        if shouldRefresh, value != nil {
+        if shouldRefresh, self.value != nil {
           _ = try? await dataSource.refresh(clear: source.clear)
         } else if source.policy == .lazy, !dataSource.hasActiveSubscribers {
           // Lazy policy without subscribers - mark for refresh when subscriber arrives
-          hasPendingLazyRefresh = true
+          self.hasPendingLazyRefresh = true
         }
       }
     }
+    observerTasks.append(task)
   }
 }
 
