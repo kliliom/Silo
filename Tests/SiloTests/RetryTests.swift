@@ -440,6 +440,70 @@ struct RetryTests {
     #expect(await state.attempts == 2)
   }
 
+  /// Verifies that `.retry(count: 0)` does not crash and behaves as a single attempt with no
+  /// retries. Historically this crashed at fetch time with "Range requires lowerBound <=
+  /// upperBound" because the retry loop iterated `1...maxAttempts`. The fetch closure must run
+  /// exactly once and its error must propagate to the caller.
+  @Test("retry(count: 0) performs a single attempt without crashing")
+  func retryCountZeroSingleAttempt() async throws {
+    actor State {
+      var attempts = 0
+      func increment() { attempts += 1 }
+    }
+    let state = State()
+
+    let source = dataSource {
+      await state.increment()
+      throw NSError(domain: "test", code: 1)
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .retry(count: 0)
+    .build()
+
+    do {
+      try await source.refresh()
+      Issue.record("Should have thrown")
+    } catch {
+      // Expected
+    }
+
+    #expect(await state.attempts == 1)
+  }
+
+  /// Verifies that `.retry(count: 1)` means exactly one total attempt — the fetch runs once and
+  /// a failure is not retried, matching the "count includes the first attempt" semantics.
+  @Test("retry(count: 1) performs exactly one attempt")
+  func retryCountOneSingleAttempt() async throws {
+    actor State {
+      var attempts = 0
+      func increment() { attempts += 1 }
+    }
+    let state = State()
+
+    let source = dataSource {
+      await state.increment()
+      throw NSError(domain: "test", code: 1)
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .retry(count: 1)
+    .build()
+
+    do {
+      try await source.refresh()
+      Issue.record("Should have thrown")
+    } catch {
+      // Expected
+    }
+
+    #expect(await state.attempts == 1)
+  }
+
   /// Verifies that calling `.retry()` multiple times on a `DataSourceBuilder` applies only the
   /// last configuration, discarding all earlier ones. The builder chains `.retry(count: 10)` then
   /// `.retry(count: 2)`; the fetch always fails and the test asserts the closure was called

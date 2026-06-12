@@ -707,44 +707,22 @@ public final class DataSource<Value: Sendable>: Sendable {
   }
 
   func fetchWithRetry() async throws -> Value {
-    guard let strategy = retryStrategy else {
+    guard let strategy = retryStrategy, strategy.maxAttempts > 1 else {
       return try await fetch()
     }
 
-    var lastError: Error?
-    for attempt in 1...strategy.maxAttempts {
+    for attempt in 1..<strategy.maxAttempts {
       do {
         return try await fetch()
       } catch {
-        lastError = error
-
-        // Check retry error handler
-        if let handler = retryErrorHandler {
-          let action = await handler(error)
-          switch action {
-          case .retry:
-            if attempt < strategy.maxAttempts {
-              let delay = strategy.delay(for: attempt)
-              try await Task.sleep(for: delay, tolerance: retryTolerance)
-              continue
-            }
-          case .stop:
-            throw error
-          }
-        }
-        // No handler or handler returned .retry on last attempt
-
-        // No handler or returned .retry
-        if attempt < strategy.maxAttempts {
-          let delay = strategy.delay(for: attempt)
-          try await Task.sleep(for: delay, tolerance: retryTolerance)
-        } else {
+        if let handler = retryErrorHandler, case .stop = await handler(error) {
           throw error
         }
+        try await Task.sleep(for: strategy.delay(for: attempt), tolerance: retryTolerance)
       }
     }
 
-    throw lastError ?? NSError(domain: "DataSource", code: -1)
+    return try await fetch()
   }
 
   func emitValue(_ value: Value) {
