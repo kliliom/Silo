@@ -153,30 +153,16 @@ public final class DataSource<Value: Sendable>: Sendable {
   }
 
   deinit {
-    // NOTE: same as `terminate()`
+    // Cleanup equivalent to terminate(); resetting stored state is pointless on a
+    // deallocating instance. Dependency observers are cancelled by the coordinator's
+    // own deinit, which cannot be reached from this nonisolated context.
     currentFetchTask?.cancel()
-    currentFetchTask = nil
     ttlExpiryTask?.cancel()
-    ttlExpiryTask = nil
-    ttlExpiryTime = nil
     debounceTask?.cancel()
-    debounceTask = nil
-    debounceCounter = 0
     autoRefreshTask?.cancel()
-    autoRefreshTask = nil
-    let valueConts = Array(valueContinuations.values)
-    valueContinuations.removeAll()
-    let stateConts = Array(stateContinuations.values)
-    stateContinuations.removeAll()
-    let valueWithStateConts = Array(valueWithStateContinuations.values)
-    valueWithStateContinuations.removeAll()
-    activeSubscriberCount = 0
-    for continuation in valueConts { continuation.finish() }
-    for continuation in stateConts { continuation.finish() }
-    for continuation in valueWithStateConts { continuation.finish() }
-    throttleExpiryTime = nil
-    autoRefreshPaused = false
-    isRefreshing = false
+    for continuation in valueContinuations.values { continuation.finish() }
+    for continuation in stateContinuations.values { continuation.finish() }
+    for continuation in valueWithStateContinuations.values { continuation.finish() }
   }
 
   // MARK: - Public API
