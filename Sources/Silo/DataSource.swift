@@ -189,6 +189,10 @@ public final class DataSource<Value: Sendable>: Sendable {
   /// Drives the auto-refresh lifecycle: the timer starts on first subscriber and stops when
   /// the last one terminates.
   ///
+  /// > Important: Buffering is unbounded — a consumer that falls behind accumulates every
+  /// > intermediate value in memory. If only the latest value matters (typical for UI),
+  /// > use ``values(bufferingPolicy:)`` with `.bufferingNewest(1)`.
+  ///
   /// ```swift
   /// for await user in userSource.values {
   ///     updateUI(with: user)
@@ -258,6 +262,10 @@ public final class DataSource<Value: Sendable>: Sendable {
   /// Emits whenever `isRefreshing` or `isEmpty` changes. Use this to drive loading indicators
   /// and empty-state views independently of the data value.
   ///
+  /// > Important: Buffering is unbounded — a consumer that falls behind accumulates every
+  /// > intermediate state in memory. If only the latest state matters, use
+  /// > ``state(bufferingPolicy:)`` with `.bufferingNewest(1)`.
+  ///
   /// ```swift
   /// for await state in userSource.state {
   ///     loadingIndicator.isVisible = state.isRefreshing
@@ -303,6 +311,10 @@ public final class DataSource<Value: Sendable>: Sendable {
   /// `state` separately when you need both in the same handler.
   ///
   /// Like `values`, counts toward the active subscriber count and drives the auto-refresh lifecycle.
+  ///
+  /// > Important: Buffering is unbounded — a consumer that falls behind accumulates every
+  /// > intermediate snapshot in memory. If only the latest snapshot matters (typical for UI),
+  /// > use ``valueWithState(bufferingPolicy:)`` with `.bufferingNewest(1)`.
   ///
   /// ```swift
   /// for await snapshot in userSource.valueWithState {
