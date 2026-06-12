@@ -250,6 +250,89 @@ struct ClearingTests {
     #expect(afterClear?.isRefreshing == false)
   }
 
+  /// Verifies that `cancelRefresh()` does not clear the cache through the `onError` handler.
+  /// Historically the fetch's `CancellationError` was routed into `onError` like any failure, so
+  /// the default `.clear` handler wiped previously cached data as a side effect of a routine
+  /// cancellation (e.g. a view disappearing).
+  @Test("cancelRefresh does not clear the cache via the default onError")
+  func cancelRefreshKeepsCacheWithDefaultOnError() async throws {
+    actor State {
+      var shouldSleep = false
+      func setShouldSleep(_ v: Bool) { shouldSleep = v }
+    }
+    let state = State()
+    let fetchStarted = Semaphore(value: 0)
+
+    // No onError given — the default returns .clear
+    let source = dataSource {
+      if await state.shouldSleep {
+        await fetchStarted.signal()
+        try await Task.sleep(for: .seconds(10))
+      }
+      return "data"
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    try await source.refresh()
+
+    await state.setShouldSleep(true)
+    let refreshTask = Task { _ = try? await source.refresh() }
+    await fetchStarted.wait()
+
+    source.cancelRefresh()
+    await refreshTask.value
+
+    // The cache must survive the cancellation despite the default .clear handler
+    var iterator = source.values.makeAsyncIterator()
+    #expect(await iterator.next() == "data")
+  }
+
+  /// Verifies that a fetch closure that ignores cancellation cannot overwrite the cache after
+  /// `cancelRefresh()`. The fetch blocks on a non-cancellable semaphore and completes *after*
+  /// the cancellation; its late result must be discarded, not stored or emitted.
+  @Test("Late result from a non-cooperative fetch is discarded after cancelRefresh")
+  func lateResultDiscardedAfterCancel() async throws {
+    actor State {
+      var shouldBlock = false
+      func setShouldBlock(_ v: Bool) { shouldBlock = v }
+    }
+    let state = State()
+    let fetchStarted = Semaphore(value: 0)
+    let unblockFetch = Semaphore(value: 0)
+
+    let source = dataSource {
+      if await state.shouldBlock {
+        await fetchStarted.signal()
+        await unblockFetch.wait()  // does not respond to cancellation
+        return "late"
+      }
+      return "data"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    try await source.refresh()
+
+    await state.setShouldBlock(true)
+    let refreshTask = Task { _ = try? await source.refresh() }
+    await fetchStarted.wait()
+
+    source.cancelRefresh()
+
+    // Let the non-cooperative fetch finish after the cancellation
+    await unblockFetch.signal()
+    await refreshTask.value
+    try await Task.sleep(for: .milliseconds(20))
+
+    var iterator = source.values.makeAsyncIterator()
+    #expect(await iterator.next() == "data")
+  }
+
   /// Verifies that `cancelRefresh()` propagates a `CancellationError` to all callers currently
   /// awaiting a `refresh()`. A slow in-flight fetch is started; `cancelRefresh()` is called once
   /// the fetch begins, and the test asserts the caller's catch block receives `CancellationError`.

@@ -479,6 +479,10 @@ public final class DataSource<Value: Sendable>: Sendable {
   /// Any pending `refresh()` calls waiting on the cancelled task will receive
   /// a cancellation error.
   ///
+  /// Cancellation does not invoke the `onError` handler: the cached value is always
+  /// preserved unless `clear: true` is passed. A fetch closure that does not cooperate
+  /// with cancellation may keep running, but its result is discarded.
+  ///
   /// - Parameter clear: If `true`, also clears the cached value by calling `clear()`
   ///
   /// Example:
@@ -668,6 +672,10 @@ public final class DataSource<Value: Sendable>: Sendable {
 
         let newValue = try await fetchWithRetry()
 
+        // A fetch closure that ignores cancellation can still complete after
+        // cancelRefresh(); its result must not overwrite the cache.
+        try Task.checkCancellation()
+
         // Check if value changed (if distinct is enabled)
         let shouldEmit: Bool
         if let comparator = distinctComparator {
@@ -697,6 +705,11 @@ public final class DataSource<Value: Sendable>: Sendable {
 
         return newValue
       } catch {
+        // Cancellation is a deliberate caller action, not a fetch failure —
+        // it bypasses onError so the default .clear cannot wipe the cache.
+        if error is CancellationError {
+          throw error
+        }
         let action = await errorHandler(error)
         switch action {
         case .keep:
