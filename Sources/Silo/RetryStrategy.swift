@@ -87,7 +87,9 @@ public struct RetryStrategy: Sendable {
     maxDelay: Duration? = nil
   ) -> RetryStrategy {
     RetryStrategy(maxAttempts: maxAttempts) { attemptNumber in
-      var delay = initialDelay * Int64(pow(multiplier, Double(attemptNumber - 1)))
+      // Clamp the factor so extreme attempt counts cannot overflow Duration arithmetic.
+      let factor = min(pow(multiplier, Double(attemptNumber - 1)), 1e15)
+      var delay = initialDelay * factor
       if let maxDelay = maxDelay, delay > maxDelay {
         delay = maxDelay
       }

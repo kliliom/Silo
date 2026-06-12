@@ -24,6 +24,38 @@ struct RetryStrategyTests {
     #expect(strategy.delay(for: 4) == .milliseconds(80))
   }
 
+  /// Verifies that `RetryStrategy.exponentialBackoff` honors fractional multipliers instead of
+  /// truncating them to whole numbers. With a 1.5× multiplier on a 1-second initial delay, the
+  /// delays must be exactly 1 s, 1.5 s, and 2.25 s (historically the factor was truncated to
+  /// `Int64`, collapsing 1.5 to 1.0 and producing a constant delay).
+  @Test("Exponential backoff supports fractional multipliers")
+  func exponentialBackoffFractionalMultiplier() {
+    let strategy = RetryStrategy.exponentialBackoff(
+      maxAttempts: 3,
+      initialDelay: .seconds(1),
+      multiplier: 1.5
+    )
+
+    #expect(strategy.delay(for: 1) == .seconds(1))
+    #expect(strategy.delay(for: 2) == .milliseconds(1500))
+    #expect(strategy.delay(for: 3) == .milliseconds(2250))
+  }
+
+  /// Verifies that `RetryStrategy.exponentialBackoff` does not trap on very large attempt numbers
+  /// where the exponential factor exceeds any representable duration. The computed delay must be
+  /// a valid (finite, positive) duration rather than crashing on overflow.
+  @Test("Exponential backoff does not overflow on extreme attempt numbers")
+  func exponentialBackoffOverflowClamped() {
+    let strategy = RetryStrategy.exponentialBackoff(
+      maxAttempts: 1000,
+      initialDelay: .seconds(1),
+      multiplier: 2.0
+    )
+
+    let delay = strategy.delay(for: 1000)
+    #expect(delay > .zero)
+  }
+
   /// Verifies that the `maxDelay` parameter of `RetryStrategy.exponentialBackoff` caps computed
   /// delays so they never exceed the specified ceiling. With a 10× multiplier and a 200 ms cap,
   /// the second attempt is capped from 1 000 ms to 200 ms, and subsequent attempts remain at
