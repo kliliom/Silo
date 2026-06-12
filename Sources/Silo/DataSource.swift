@@ -484,6 +484,9 @@ public final class DataSource<Value: Sendable>: Sendable {
   /// preserved unless `clear: true` is passed. A fetch closure that does not cooperate
   /// with cancellation may keep running, but its result is discarded.
   ///
+  /// When no fetch is in progress this is a no-op (apart from the optional `clear()`):
+  /// no state or snapshot is emitted.
+  ///
   /// - Parameter clear: If `true`, also clears the cached value by calling `clear()`
   ///
   /// Example:
@@ -499,6 +502,7 @@ public final class DataSource<Value: Sendable>: Sendable {
   /// }
   /// ```
   public func cancelRefresh(clear: Bool = false) {
+    let hadFetchInFlight = currentFetchTask != nil
     currentFetchTask?.cancel()
     currentFetchTask = nil
 
@@ -506,6 +510,10 @@ public final class DataSource<Value: Sendable>: Sendable {
       self.clear()
     }
 
+    // With nothing in flight there is no state transition to report — emitting
+    // here would push a duplicate snapshot to valueWithState subscribers, which
+    // (unlike the state stream) have no dedup guard.
+    guard hadFetchInFlight else { return }
     isRefreshing = false
     emitState()
     emitValueWithState()

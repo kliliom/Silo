@@ -6,6 +6,35 @@ import Testing
 @Suite("State Tracking Tests", .timeLimit(.minutes(1)))
 struct StateTrackingTests {
 
+  /// Verifies that `cancelRefresh()` called while no fetch is in flight emits nothing to the
+  /// `valueWithState` stream. The `state` stream already deduplicates unchanged states; this
+  /// pins the same behaviour for snapshots: the next emission after an idle cancel must be the
+  /// `isRefreshing: true` snapshot of the following refresh, not a duplicate idle snapshot.
+  @Test("cancelRefresh with no fetch in flight emits no duplicate snapshot")
+  func cancelRefreshIdleEmitsNothing() async throws {
+    let source = dataSource {
+      "data"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    var iterator = source.valueWithState.makeAsyncIterator()
+    let initial = await iterator.next()
+    #expect(initial?.state.isRefreshing == false)
+
+    // Idle cancel — nothing is in flight, so nothing may be emitted
+    source.cancelRefresh()
+
+    // The next snapshot is the one from the subsequent refresh starting
+    let refreshTask = Task { try await source.refresh() }
+    let next = await iterator.next()
+    #expect(next?.state.isRefreshing == true)
+    _ = try await refreshTask.value
+  }
+
   /// Verifies that the `.state` stream replays the current `DataSourceState` to a new subscriber
   /// immediately upon iteration. After a successful `refresh()`, a freshly created iterator from
   /// `.state` should yield a snapshot with `isRefreshing == false` and `isEmpty == false` without
