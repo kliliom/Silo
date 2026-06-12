@@ -671,6 +671,12 @@ public final class DataSource<Value: Sendable>: Sendable {
               try await group.waitForAll()
             } catch {
               group.cancelAll()
+              // A cancellation surfacing from a hook (e.g. via cancelRefresh) is a
+              // deliberate caller action, not a hook failure — propagate it bare so
+              // the catch below bypasses onError and the cache is preserved.
+              if error is CancellationError {
+                throw error
+              }
               throw BeforeFetchError(underlyingError: error)
             }
           }

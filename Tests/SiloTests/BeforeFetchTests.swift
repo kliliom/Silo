@@ -334,4 +334,65 @@ struct BeforeFetchTests {
     #expect(await state.hookCount == 1)
     #expect(await state.fetchCount == 1)
   }
+
+  /// Verifies that `cancelRefresh()` arriving while a `.beforeFetch()` hook is running is
+  /// treated as a cancellation, not a hook failure: the resulting `CancellationError` must
+  /// not be wrapped in `BeforeFetchError`, must bypass the `onError` handler entirely, and
+  /// the cached value must be preserved even though the default error action is `.clear`.
+  @Test("Cancellation during a beforeFetch hook bypasses onError and keeps the cache")
+  func cancellationDuringHookBypassesOnError() async throws {
+    actor State {
+      var hookCount = 0
+      var onErrorCallCount = 0
+      func incrementHook() -> Int {
+        hookCount += 1
+        return hookCount
+      }
+      func incrementOnError() { onErrorCallCount += 1 }
+    }
+    let state = State()
+    let hookStarted = Semaphore(value: 0)
+
+    let source = dataSource {
+      "data"
+    } onError: { _ in
+      await state.incrementOnError()
+      return .clear
+    } emptyValue: {
+      "empty"
+    }
+    .beforeFetch {
+      let call = await state.incrementHook()
+      if call > 1 {
+        await hookStarted.signal()
+        try await Task.sleep(for: .seconds(10))
+      }
+    }
+    .build()
+
+    // First refresh populates the cache
+    try await source.refresh()
+
+    // Second refresh blocks in the hook; cancel while the hook is sleeping
+    let caller = Task { () -> Bool in
+      do {
+        _ = try await source.refresh()
+        return false
+      } catch is CancellationError {
+        return true
+      } catch {
+        return false
+      }
+    }
+    await hookStarted.wait()
+    source.cancelRefresh()
+
+    // Caller receives a bare CancellationError, not a BeforeFetchError
+    #expect(await caller.value)
+
+    // onError was never consulted, so the default .clear did not wipe the cache
+    #expect(await state.onErrorCallCount == 0)
+    var iterator = source.values.makeAsyncIterator()
+    #expect(await iterator.next() == "data")
+  }
 }

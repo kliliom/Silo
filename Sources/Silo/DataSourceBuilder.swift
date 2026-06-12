@@ -507,6 +507,10 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   /// Multiple `.beforeFetch()` calls execute concurrently. If any hook throws, the
   /// remaining hooks are cancelled and the fetch is aborted.
   ///
+  /// A `CancellationError` thrown by a hook — for example when ``DataSource/cancelRefresh(clear:)``
+  /// cancels the fetch while hooks are running — is not wrapped: it propagates as-is, bypasses
+  /// `onError`, and leaves the cached value untouched.
+  ///
   /// - Parameter handler: Async throwing closure to run before the fetch
   /// - Returns: The builder for method chaining
   ///
