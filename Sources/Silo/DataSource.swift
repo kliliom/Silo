@@ -84,6 +84,7 @@ public final class DataSource<Value: Sendable>: Sendable {
   var isRefreshing: Bool = false
 
   // Stream management
+  var lastEmittedState = DataSourceState(isRefreshing: false, isEmpty: true)
   var valueContinuations: [UUID: AsyncStream<Value>.Continuation] = [:]
   var stateContinuations: [UUID: AsyncStream<DataSourceState>.Continuation] = [:]
   var valueWithStateContinuations: [UUID: AsyncStream<DataSourceValueWithState<Value>>.Continuation] = [:]
@@ -632,6 +633,9 @@ public final class DataSource<Value: Sendable>: Sendable {
     throttleExpiryTime = nil
     autoRefreshPaused = false
     isRefreshing = false
+    // Keep the dedup tracker in sync with the silent isRefreshing reset above,
+    // so a post-terminate refresh is not mistaken for a duplicate emission.
+    lastEmittedState = DataSourceState(isRefreshing: isRefreshing, isEmpty: isEmpty)
   }
 
   // MARK: - Methods
@@ -752,6 +756,8 @@ public final class DataSource<Value: Sendable>: Sendable {
 
   func emitState() {
     let state = DataSourceState(isRefreshing: isRefreshing, isEmpty: isEmpty)
+    guard state != lastEmittedState else { return }
+    lastEmittedState = state
     for continuation in stateContinuations.values {
       continuation.yield(state)
     }

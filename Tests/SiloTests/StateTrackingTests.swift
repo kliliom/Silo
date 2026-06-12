@@ -116,6 +116,53 @@ struct StateTrackingTests {
     #expect(done?.isEmpty == false)
   }
 
+  /// Verifies that the `.state` stream only emits when `isRefreshing` or `isEmpty` actually
+  /// changes, as documented. Operations that leave the state untouched — `cancelRefresh()` with
+  /// no in-flight fetch, `clear()` on an already-empty source — must not produce duplicate
+  /// emissions, so a full refresh cycle yields exactly three distinct states.
+  @Test("State stream does not emit duplicate states")
+  func stateStreamSkipsDuplicates() async throws {
+    actor Collector {
+      var states: [DataSourceState] = []
+      func append(_ s: DataSourceState) { states.append(s) }
+    }
+    let collector = Collector()
+
+    let source = dataSource {
+      "value"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    let consumer = Task {
+      for await state in source.state {
+        await collector.append(state)
+      }
+    }
+    try await Task.sleep(for: .milliseconds(20))
+
+    // No-ops: the state is already (isRefreshing: false, isEmpty: true)
+    source.cancelRefresh()
+    source.clear()
+
+    try await source.refresh()
+    try await Task.sleep(for: .milliseconds(20))
+    source.terminate()
+    await consumer.value
+
+    let states = await collector.states
+    #expect(
+      states == [
+        DataSourceState(isRefreshing: false, isEmpty: true),
+        DataSourceState(isRefreshing: true, isEmpty: true),
+        DataSourceState(isRefreshing: false, isEmpty: false),
+      ]
+    )
+  }
+
   /// Verifies that `state()` (the method with configurable buffering) produces the same lifecycle
   /// transitions as the `.state` property when using default buffering. The test observes initial,
   /// refreshing, and completed states through the method-returned stream and asserts each
