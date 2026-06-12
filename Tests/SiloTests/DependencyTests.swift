@@ -673,9 +673,8 @@ struct DependencyTests {
   }
 
   /// Verifies that calling `refresh()` on a dependency-backed `DataSource` before any dependency
-  /// value has been emitted throws an error rather than passing `nil` to the fetch closure.
-  /// A `.manual` dependency stream is created but never yielded to; the test asserts `refresh()`
-  /// throws an `NSError` with domain `"DataSource"`.
+  /// value has been emitted throws a typed `DependencyUnavailableError` rather than passing `nil`
+  /// to the fetch closure. A `.manual` dependency stream is created but never yielded to.
   @Test("Refresh throws when the dependency has not yet emitted any value")
   func refreshThrowsWhenDependencyUnavailable() async throws {
     let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
@@ -694,8 +693,8 @@ struct DependencyTests {
     do {
       _ = try await source.refresh()
       Issue.record("Expected error when dependency unavailable")
-    } catch let error as NSError {
-      #expect(error.domain == "DataSource")
+    } catch is DependencyUnavailableError {
+      // Expected
     }
 
     continuation.finish()

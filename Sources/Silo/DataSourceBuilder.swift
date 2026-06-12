@@ -220,11 +220,7 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
 
     let wrappedFetch: @Sendable () async throws -> Value = { @MainActor [fetch] in
       guard let setValues = stateHolder.value else {
-        throw NSError(
-          domain: "DataSource",
-          code: -1,
-          userInfo: [NSLocalizedDescriptionKey: "Dependencies not yet available"]
-        )
+        throw DependencyUnavailableError()
       }
       return try await fetch(repeat each setValues)
     }
