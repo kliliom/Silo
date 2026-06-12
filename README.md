@@ -19,7 +19,7 @@ Add Silo to your Swift package dependencies:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/kliliom/Silo.git", from: "1.0.0")
+    .package(url: "https://github.com/kliliom/Silo.git", from: "2.0.0")
 ]
 ```
 

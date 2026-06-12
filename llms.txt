@@ -24,7 +24,7 @@ Silo provides a `DataSource<Value>` type that wraps async fetch operations with 
 Add to Package.swift:
 ```swift
 dependencies: [
-    .package(url: "https://github.com/kliliom/Silo.git", from: "1.0.0")
+    .package(url: "https://github.com/kliliom/Silo.git", from: "2.0.0")
 ]
 ```
 
