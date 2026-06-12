@@ -777,7 +777,8 @@ public final class DataSource<Value: Sendable>: Sendable {
   func startAutoRefresh(immediate: Bool) {
     guard let interval = autoRefreshInterval,
       !autoRefreshPaused,
-      autoRefreshTask == nil
+      autoRefreshTask == nil,
+      activeSubscriberCount > 0
     else { return }
 
     autoRefreshTask = Task { [weak self] in

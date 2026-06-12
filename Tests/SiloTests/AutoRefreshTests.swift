@@ -265,6 +265,63 @@ struct AutoRefreshTests {
     #expect(await state.fetchCount == 0)
   }
 
+  /// Verifies that a manual `refresh()` with zero subscribers does not start the `.autoRefresh`
+  /// timer. Historically the post-fetch timer reset started the timer unconditionally, so a single
+  /// unobserved `refresh()` kicked off periodic fetches that ran forever with nobody listening.
+  @Test("Manual refresh with no subscribers does not start the auto-refresh timer")
+  func manualRefreshDoesNotStartTimer() async throws {
+    actor State {
+      var fetchCount = 0
+      func increment() { fetchCount += 1 }
+    }
+    let state = State()
+
+    let source = dataSource {
+      await state.increment()
+      return await state.fetchCount
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      0
+    }
+    .autoRefresh(.milliseconds(10))
+    .build()
+
+    _ = try await source.refresh()
+    #expect(await state.fetchCount == 1)
+
+    try await Task.sleep(for: .milliseconds(60))
+    #expect(await state.fetchCount == 1)
+  }
+
+  /// Verifies that `clear()` with zero subscribers does not start the `.autoRefresh` timer.
+  /// Historically `clear()`'s timer reset started the timer unconditionally, same as the
+  /// post-fetch reset.
+  @Test("clear() with no subscribers does not start the auto-refresh timer")
+  func clearDoesNotStartTimer() async throws {
+    actor State {
+      var fetchCount = 0
+      func increment() { fetchCount += 1 }
+    }
+    let state = State()
+
+    let source = dataSource {
+      await state.increment()
+      return await state.fetchCount
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      0
+    }
+    .autoRefresh(.milliseconds(10))
+    .build()
+
+    source.clear()
+
+    try await Task.sleep(for: .milliseconds(60))
+    #expect(await state.fetchCount == 0)
+  }
+
   /// Verifies that calling `resumeAutoRefresh()` while auto-refresh is already running has no
   /// observable effect (it does not restart the timer or schedule an extra fetch). After
   /// subscribing to activate the timer, `resumeAutoRefresh()` is called; `stopAutoRefresh()` is
