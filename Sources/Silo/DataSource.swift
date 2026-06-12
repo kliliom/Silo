@@ -425,7 +425,7 @@ public final class DataSource<Value: Sendable>: Sendable {
     }
 
     // Throttle: drop or queue; only runs when a fetch is actually needed
-    if let throttleDuration = throttleDuration {
+    if throttleDuration != nil {
       if let expiryTime = throttleExpiryTime, ContinuousClock.now < expiryTime {
         if throttleLast {
           let waitDuration = expiryTime - ContinuousClock.now
@@ -436,7 +436,6 @@ public final class DataSource<Value: Sendable>: Sendable {
           return cachedValue
         }
       }
-      throttleExpiryTime = ContinuousClock.now.advanced(by: throttleDuration)
     }
 
     // Prerequisites: checked once per settled fetch attempt, after debounce/throttle
@@ -649,6 +648,12 @@ public final class DataSource<Value: Sendable>: Sendable {
     // Deduplicate in-flight requests
     if let existingTask = currentFetchTask {
       return try await existingTask.value
+    }
+
+    // The throttle window starts only when a fetch actually begins — callers that
+    // join an in-flight task or fail a gate check must not push it forward.
+    if let throttleDuration = throttleDuration {
+      throttleExpiryTime = ContinuousClock.now.advanced(by: throttleDuration)
     }
 
     isRefreshing = true

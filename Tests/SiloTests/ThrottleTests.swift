@@ -124,6 +124,95 @@ struct ThrottleTests {
     #expect(await state.fetchCount == 1)
   }
 
+  /// Verifies that the throttle window only starts when a fetch actually runs. A `refresh()`
+  /// blocked by a failing prerequisite performs no fetch, so it must not open a throttle window
+  /// that would suppress the next (now permitted) refresh. Historically the window was set in
+  /// `refresh()` before the prerequisite check.
+  @Test("Throttle window only starts when a fetch actually runs")
+  func throttleWindowOnlyOnRealFetch() async throws {
+    actor State {
+      var allow = false
+      var fetchCount = 0
+      func setAllow(_ v: Bool) { allow = v }
+      func increment() { fetchCount += 1 }
+    }
+    let state = State()
+
+    struct Gate: DataSourceRefreshPrerequisite {
+      let state: State
+      func check() async -> Bool { await state.allow }
+    }
+
+    let source = dataSource {
+      await state.increment()
+      return await state.fetchCount
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      0
+    }
+    .throttle(.seconds(60))
+    .requires(Gate(state: state))
+    .build()
+
+    // Prerequisite fails — no fetch happens, so no throttle window may start
+    _ = try? await source.refresh()
+    #expect(await state.fetchCount == 0)
+
+    // The next refresh must not be throttled by the failed attempt
+    await state.setAllow(true)
+    let result = try await source.refresh()
+    #expect(result == 1)
+  }
+
+  /// Verifies that a `refresh()` joining an already in-flight fetch (deduplication) does not
+  /// advance the throttle window. The first fetch's window is allowed to expire while the fetch
+  /// is still running; a second caller then joins the in-flight task, and a third refresh after
+  /// completion must trigger a real fetch instead of being throttled by the joiner.
+  @Test("Deduplicated refresh does not advance the throttle window")
+  func dedupedRefreshDoesNotAdvanceThrottle() async throws {
+    actor State {
+      var fetchCount = 0
+      func increment() { fetchCount += 1 }
+    }
+    let state = State()
+    let fetchStarted = Semaphore(value: 0)
+    let releaseFetch = Semaphore(value: 0)
+
+    let source = dataSource {
+      await state.increment()
+      if await state.fetchCount == 1 {
+        await fetchStarted.signal()
+        await releaseFetch.wait()
+      }
+      return await state.fetchCount
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      0
+    }
+    .throttle(.milliseconds(100))
+    .build()
+
+    // First fetch: opens a 100 ms window, then blocks
+    let first = Task { try await source.refresh() }
+    await fetchStarted.wait()
+
+    // Let the window expire while the fetch is still in flight
+    try await Task.sleep(for: .milliseconds(150))
+
+    // Joins the in-flight fetch — must not open a new window
+    let second = Task { try await source.refresh() }
+
+    await releaseFetch.signal()
+    #expect(try await first.value == 1)
+    #expect(try await second.value == 1)
+
+    // No active window remains, so this must fetch for real
+    let third = try await source.refresh()
+    #expect(third == 2)
+  }
+
   /// Verifies that `refresh(clear: true)` bypasses the throttle window, forcing a fetch even when
   /// the throttle would normally suppress the call. After a throttled fetch starts the window, a
   /// normal `refresh()` returns the cached value; a subsequent `refresh(clear: true)` invokes the
