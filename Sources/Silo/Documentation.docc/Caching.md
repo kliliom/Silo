@@ -108,7 +108,7 @@ let profileSource = dataSource {
     try await api.fetchProfile()
 } onError: { _ in .keep }
 .ttl(.seconds(300))
-.retry(count: 3, delay: .seconds(2)) // Retry failed fetches up to 3 times
+.retry(maxAttempts: 3, delay: .seconds(2)) // Up to 3 fetch attempts in total: 1 initial + up to 2 retries
 .build()
 ```
 

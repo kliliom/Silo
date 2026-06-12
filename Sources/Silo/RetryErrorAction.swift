@@ -2,7 +2,7 @@ import Foundation
 
 /// The action a ``DataSource`` should take after an individual retry attempt fails.
 ///
-/// Return this from the per-attempt `onError` closure in ``DataSourceBuilder/retry(count:delay:tolerance:onError:)``
+/// Return this from the per-attempt `onError` closure in ``DataSourceBuilder/retry(maxAttempts:delay:tolerance:onError:)``
 /// and ``DataSourceBuilder/retry(strategy:tolerance:onError:)`` to control whether the
 /// next retry attempt should proceed.
 ///
@@ -10,7 +10,7 @@ import Foundation
 /// dataSource {
 ///     try await api.fetchArticles()
 /// } onError: { _ in .keep }
-/// .retry(count: 3, delay: .seconds(1)) { error in
+/// .retry(maxAttempts: 3, delay: .seconds(1)) { error in
 ///     switch error {
 ///     case is URLError:       return .retry  // Network error — try again
 ///     case is DecodingError:  return .stop   // Parsing error — stop retrying

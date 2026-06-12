@@ -154,7 +154,7 @@ struct PrerequisitesTests {
   }
 
   /// Verifies that a `PrerequisiteError` bypasses the `.retry()` mechanism entirely. Even with
-  /// `retry(count: 3)` configured, a failing prerequisite causes `refresh()` to throw immediately
+  /// `retry(maxAttempts: 3)` configured, a failing prerequisite causes `refresh()` to throw immediately
   /// after a single `check()` call, with the fetch closure never invoked.
   @Test("PrerequisiteError does not trigger retry")
   func prerequisiteErrorDoesNotRetry() async throws {
@@ -183,7 +183,7 @@ struct PrerequisitesTests {
       "empty"
     }
     .requires(CountingFail(state: state))
-    .retry(count: 3)
+    .retry(maxAttempts: 3)
     .build()
 
     do {

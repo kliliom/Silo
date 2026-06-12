@@ -21,18 +21,22 @@ public struct RetryStrategy: Sendable {
   /// Maximum number of fetch attempts, including the first try.
   public let maxAttempts: Int
 
-  /// Returns the delay before attempt `n` (1-indexed: 1 = delay before first retry).
+  /// Called after attempt `n` fails (`n` ranges from 1 to `maxAttempts - 1`, where 1 is the
+  /// initial attempt); returns the delay to wait before attempt `n + 1`.
   public let delayCalculator: @Sendable (Int) -> Duration
 
   /// Creates a retry strategy with a custom delay closure.
   ///
   /// - Parameters:
   ///   - maxAttempts: Maximum number of fetch attempts, including the first try.
-  ///   - delayCalculator: Returns the delay before attempt `n` (1-indexed).
+  ///   - delayCalculator: Called after attempt `n` fails (`n` ranges from 1 to
+  ///     `maxAttempts - 1`, where 1 is the initial attempt); returns the delay to wait
+  ///     before attempt `n + 1`.
   ///
   /// ```swift
+  /// // 3 attempts, delays between them: 1s, 4s
   /// let strategy = RetryStrategy(maxAttempts: 3) { attempt in
-  ///     .seconds(attempt * attempt) // 1s, 4s, 9s
+  ///     .seconds(attempt * attempt)
   /// }
   /// ```
   public init(maxAttempts: Int, delayCalculator: @escaping @Sendable (Int) -> Duration) {
@@ -40,10 +44,11 @@ public struct RetryStrategy: Sendable {
     self.delayCalculator = delayCalculator
   }
 
-  /// Returns the delay before the given attempt number (1-indexed).
+  /// Returns the delay to wait after the given attempt fails, before the next attempt starts.
   ///
-  /// - Parameter attemptNumber: The attempt number, where 1 is the delay before the first retry.
-  /// - Returns: Duration to wait before making attempt `attemptNumber`.
+  /// - Parameter attemptNumber: The number of the attempt that just failed (1-indexed,
+  ///   where 1 is the initial attempt).
+  /// - Returns: Duration to wait before making attempt `attemptNumber + 1`.
   public func delay(for attemptNumber: Int) -> Duration {
     delayCalculator(attemptNumber)
   }
@@ -56,7 +61,8 @@ public struct RetryStrategy: Sendable {
   /// Useful for handling rate-limited APIs or overloaded servers.
   ///
   /// - Parameters:
-  ///   - maxAttempts: Maximum number of retry attempts
+  ///   - maxAttempts: Maximum number of fetch attempts, including the first try.
+  ///     For example, `maxAttempts: 3` means one initial attempt plus up to two retries.
   ///   - initialDelay: Delay before the first retry
   ///   - multiplier: Factor to multiply delay by for each attempt (default: 2.0)
   ///   - maxDelay: Optional maximum delay cap
@@ -65,16 +71,16 @@ public struct RetryStrategy: Sendable {
   ///
   /// Example:
   /// ```swift
-  /// // Delays: 1s, 2s, 4s, 8s, 16s
+  /// // 5 attempts, delays between them: 1s, 2s, 4s, 8s
   /// .exponentialBackoff(
   ///     maxAttempts: 5,
   ///     initialDelay: .seconds(1),
   ///     multiplier: 2.0
   /// )
   ///
-  /// // With max delay cap: 1s, 2s, 4s, 8s, 10s (capped)
+  /// // 6 attempts, delays between them: 1s, 2s, 4s, 8s, 10s (capped)
   /// .exponentialBackoff(
-  ///     maxAttempts: 5,
+  ///     maxAttempts: 6,
   ///     initialDelay: .seconds(1),
   ///     multiplier: 2.0,
   ///     maxDelay: .seconds(10)
@@ -103,7 +109,8 @@ public struct RetryStrategy: Sendable {
   /// Useful for predictable retry timing.
   ///
   /// - Parameters:
-  ///   - maxAttempts: Maximum number of retry attempts
+  ///   - maxAttempts: Maximum number of fetch attempts, including the first try.
+  ///     For example, `maxAttempts: 3` means one initial attempt plus up to two retries.
   ///   - initialDelay: Delay before the first retry
   ///   - increment: Amount to add to delay for each subsequent attempt
   ///
@@ -111,7 +118,7 @@ public struct RetryStrategy: Sendable {
   ///
   /// Example:
   /// ```swift
-  /// // Delays: 1s, 3s, 5s, 7s
+  /// // 4 attempts, delays between them: 1s, 3s, 5s
   /// .linearBackoff(
   ///     maxAttempts: 4,
   ///     initialDelay: .seconds(1),
@@ -133,14 +140,17 @@ public struct RetryStrategy: Sendable {
   /// Allows complete control over retry timing with a custom calculation function.
   ///
   /// - Parameters:
-  ///   - maxAttempts: Maximum number of retry attempts
-  ///   - delayCalculator: Closure that calculates delay for each attempt (1-indexed)
+  ///   - maxAttempts: Maximum number of fetch attempts, including the first try.
+  ///     For example, `maxAttempts: 3` means one initial attempt plus up to two retries.
+  ///   - delayCalculator: Called after attempt `n` fails (`n` ranges from 1 to
+  ///     `maxAttempts - 1`, where 1 is the initial attempt); returns the delay to wait
+  ///     before attempt `n + 1`.
   ///
   /// - Returns: A retry strategy with custom delay calculation
   ///
   /// Example:
   /// ```swift
-  /// // Fibonacci backoff: 1s, 1s, 2s, 3s, 5s, 8s
+  /// // Fibonacci backoff — 6 attempts, delays between them: 1s, 1s, 2s, 3s, 5s
   /// var prev = 0, curr = 1
   /// let strategy = .custom(maxAttempts: 6) { attempt in
   ///     let delay = curr

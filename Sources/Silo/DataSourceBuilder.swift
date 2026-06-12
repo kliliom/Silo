@@ -181,7 +181,7 @@ public func dataSource<Key: Sendable & Hashable, Value: Sendable, each Dependenc
 /// }
 /// .ttl(.seconds(300))
 /// .throttle(.seconds(1))
-/// .retry(count: 3)
+/// .retry(maxAttempts: 3)
 /// .distinct()
 /// .build()
 /// ```
@@ -359,10 +359,12 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
 
   /// Configure simple retry with optional delay.
   ///
-  /// Retries failed fetches up to the specified count with a constant delay between attempts.
+  /// Makes up to `maxAttempts` fetch attempts in total with a constant delay between attempts.
   ///
   /// - Parameters:
-  ///   - count: Maximum number of retry attempts
+  ///   - maxAttempts: Maximum number of fetch attempts, including the first try.
+  ///     For example, `maxAttempts: 3` means one initial attempt plus up to two retries.
+  ///     Values of `1` or less result in a single attempt with no retries.
   ///   - delay: Time to wait between attempts (default: `.zero`)
   ///   - tolerance: Allowed deviation in each retry delay timer, passed to `Task.sleep`.
   ///     `nil` uses the system default (default: `nil`)
@@ -372,11 +374,11 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   /// Example:
   /// ```swift
   /// dataSource { ... }
-  ///     .retry(count: 3, delay: .seconds(1))
+  ///     .retry(maxAttempts: 3, delay: .seconds(1))
   ///     .build()
   /// ```
-  public func retry(count: Int, delay: Duration = .zero, tolerance: Duration? = nil) -> Self {
-    self.retryStrategy = .exponentialBackoff(maxAttempts: count, initialDelay: delay, multiplier: 1.0)
+  public func retry(maxAttempts: Int, delay: Duration = .zero, tolerance: Duration? = nil) -> Self {
+    self.retryStrategy = .exponentialBackoff(maxAttempts: maxAttempts, initialDelay: delay, multiplier: 1.0)
     self.retryTolerance = tolerance
     self.retryErrorHandler = nil
     return self
@@ -389,7 +391,9 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   /// failure is decided by the top-level `onError` handler, not this one.
   ///
   /// - Parameters:
-  ///   - count: Maximum number of retry attempts
+  ///   - maxAttempts: Maximum number of fetch attempts, including the first try.
+  ///     For example, `maxAttempts: 3` means one initial attempt plus up to two retries.
+  ///     Values of `1` or less result in a single attempt with no retries.
   ///   - delay: Time to wait between attempts (default: `.zero`)
   ///   - tolerance: Allowed deviation in each retry delay timer, passed to `Task.sleep`.
   ///     `nil` uses the system default (default: `nil`)
@@ -400,7 +404,7 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   /// Example:
   /// ```swift
   /// dataSource { ... }
-  ///     .retry(count: 3, delay: .seconds(1)) { error in
+  ///     .retry(maxAttempts: 3, delay: .seconds(1)) { error in
   ///         if error is URLError {
   ///             return .retry  // Retry transient network errors
   ///         }
@@ -409,12 +413,12 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   ///     .build()
   /// ```
   public func retry(
-    count: Int,
+    maxAttempts: Int,
     delay: Duration = .zero,
     tolerance: Duration? = nil,
     onError: @escaping @Sendable (Error) async -> RetryErrorAction
   ) -> Self {
-    self.retryStrategy = .exponentialBackoff(maxAttempts: count, initialDelay: delay, multiplier: 1.0)
+    self.retryStrategy = .exponentialBackoff(maxAttempts: maxAttempts, initialDelay: delay, multiplier: 1.0)
     self.retryTolerance = tolerance
     self.retryErrorHandler = onError
     return self
@@ -630,7 +634,7 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   /// ```swift
   /// let source = dataSource { ... }
   ///     .ttl(.seconds(300))
-  ///     .retry(count: 3)
+  ///     .retry(maxAttempts: 3)
   ///     .build()
   ///
   /// // Now use the source

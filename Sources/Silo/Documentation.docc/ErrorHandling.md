@@ -54,11 +54,11 @@ do {
 
 ## Simple Retry
 
-Retry up to N times with a constant delay between attempts:
+Make up to `maxAttempts` fetch attempts in total — the initial attempt counts, so `maxAttempts: 3` means one initial attempt plus up to two retries — with a constant delay between attempts:
 
 ```swift
 dataSource { ... }
-    .retry(count: 3, delay: .seconds(1))
+    .retry(maxAttempts: 3, delay: .seconds(1))
     .build()
 // Attempt 1 → fail → wait 1s → Attempt 2 → fail → wait 1s → Attempt 3 → fail → onError
 ```
@@ -69,7 +69,7 @@ Supply a closure returning ``RetryErrorAction`` to decide per-error whether to k
 
 ```swift
 dataSource { ... }
-    .retry(count: 3, delay: .seconds(1)) { error in
+    .retry(maxAttempts: 3, delay: .seconds(1)) { error in
         switch error {
         case is URLError:       return .retry  // Network error — try again
         case is DecodingError:  return .stop   // Parsing error — give up immediately
@@ -107,7 +107,7 @@ Cap the maximum wait to avoid very long delays:
 
 ```swift
 .retry(strategy: .exponentialBackoff(
-    maxAttempts: 6,
+    maxAttempts: 7,
     initialDelay: .seconds(1),
     multiplier: 2.0,
     maxDelay: .seconds(30)
@@ -145,7 +145,7 @@ dataSource { ... }
     .build()
 ```
 
-> Note: The `delayCalculator` closure is called with the current attempt number (1-indexed). Attempt 1 is the first retry, after the initial failure.
+> Note: The `delayCalculator` closure is called after attempt *n* fails (*n* ranges from 1 to `maxAttempts - 1`, where 1 is the initial attempt) and returns the delay to wait before attempt *n + 1*. So with `maxAttempts: 5` it is called at most 4 times, with arguments 1 through 4.
 
 ## Combining Strategy and Error Gating
 
@@ -167,7 +167,7 @@ dataSource { ... }
 All retry variants accept a `tolerance` parameter to allow `Task.sleep` to fire slightly late, improving battery efficiency:
 
 ```swift
-.retry(count: 3, delay: .seconds(5), tolerance: .milliseconds(500))
+.retry(maxAttempts: 3, delay: .seconds(5), tolerance: .milliseconds(500))
 ```
 
 ## Interaction Between the Two `onError` Handlers

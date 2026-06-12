@@ -127,8 +127,8 @@ let secureDataSource = dataSource {
 .requires(NetworkAvailable())
 .requires(UserAuthenticated())
 .requires(FeatureEnabled(flagName: "secureFeature"))
-.retry(count: 2, delay: .seconds(1)) { error in
-    error is URLError ? .retry : .keep
+.retry(maxAttempts: 2, delay: .seconds(1)) { error in
+    error is URLError ? .retry : .stop
 }
 .ttl(.seconds(300))
 .build()
@@ -138,7 +138,7 @@ In this configuration:
 1. Network is checked first — no request attempted if offline
 2. Auth is verified second — no request if logged out
 3. Feature flag is checked third — no request if feature is off
-4. If all pass and the fetch fails, retry up to 2 times
+4. If all pass and the fetch fails, retry once more (2 attempts in total)
 5. Cache results for 5 minutes
 
 ## Prerequisite Evaluation Order

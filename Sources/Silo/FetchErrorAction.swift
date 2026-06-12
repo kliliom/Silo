@@ -26,7 +26,7 @@ import Foundation
 /// | `.clear` | Replaced with empty value | Stale data is wrong or sensitive |
 ///
 /// > Note: To control retry behaviour on a per-attempt basis, use ``RetryErrorAction``
-/// > in the `onError` closure of ``DataSourceBuilder/retry(count:delay:tolerance:onError:)``
+/// > in the `onError` closure of ``DataSourceBuilder/retry(maxAttempts:delay:tolerance:onError:)``
 /// > or ``DataSourceBuilder/retry(strategy:tolerance:onError:)``. That handler decides
 /// > whether to retry or stop; the cache outcome is always decided here.
 public enum FetchErrorAction: Sendable {

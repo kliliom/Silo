@@ -184,7 +184,7 @@ struct ErrorHandlingTests {
     } emptyValue: {
       "empty"
     }
-    .retry(count: 3, delay: .milliseconds(1))
+    .retry(maxAttempts: 3, delay: .milliseconds(1))
     .build()
 
     do {

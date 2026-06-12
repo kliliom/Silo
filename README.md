@@ -162,13 +162,13 @@ await source.restartAutoRefresh(immediate: true)
 ### Simple Retry
 
 ```swift
-.retry(count: 3)  // Retry up to 3 times
+.retry(maxAttempts: 3)  // Up to 3 attempts in total: 1 initial + up to 2 retries
 ```
 
 ### With Delay
 
 ```swift
-.retry(count: 3, delay: .seconds(2))  // Wait 2 seconds between retries
+.retry(maxAttempts: 3, delay: .seconds(2))  // Wait 2 seconds between retries
 ```
 
 ### Exponential Backoff
@@ -185,7 +185,7 @@ await source.restartAutoRefresh(immediate: true)
 ### With Error Handler
 
 ```swift
-.retry(count: 3, delay: .seconds(1)) { error in
+.retry(maxAttempts: 3, delay: .seconds(1)) { error in
     if case APIError.unauthorized = error {
         return .stop   // Stop retrying — defer cache decision to top-level onError
     }
@@ -284,7 +284,7 @@ onError: { error in
 `RetryErrorAction` — returned from the per-attempt `onError` in `.retry()` to control whether the next retry runs:
 
 ```swift
-.retry(count: 3) { error in
+.retry(maxAttempts: 3) { error in
     return .retry  // Try again, or .stop to defer cache decision to top-level onError
 }
 ```

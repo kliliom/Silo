@@ -6,7 +6,7 @@ import Testing
 @Suite("Retry Tests", .timeLimit(.minutes(1)))
 struct RetryTests {
 
-  /// Verifies that `.retry(count:)` automatically re-invokes the fetch closure after a failure.
+  /// Verifies that `.retry(maxAttempts:)` automatically re-invokes the fetch closure after a failure.
   /// The fetch throws for the first two attempts and succeeds on the third; the test asserts that
   /// `refresh()` ultimately returns `"success"` and that the attempt counter reached 3.
   @Test("Retry on failure")
@@ -28,7 +28,7 @@ struct RetryTests {
     } emptyValue: {
       "empty"
     }
-    .retry(count: 3)
+    .retry(maxAttempts: 3)
     .build()
 
     // Should succeed after retries
@@ -37,7 +37,7 @@ struct RetryTests {
     #expect(await state.attemptCount == 3)
   }
 
-  /// Verifies that `.retry(count:delay:)` waits at least the specified duration between each
+  /// Verifies that `.retry(maxAttempts:delay:)` waits at least the specified duration between each
   /// attempt. Timestamps are recorded at each fetch invocation and the test asserts that the
   /// interval between the first and second attempt is at least 45 ms (allowing minor variance
   /// against the configured 50 ms delay).
@@ -63,7 +63,7 @@ struct RetryTests {
     } emptyValue: {
       "empty"
     }
-    .retry(count: 3, delay: .milliseconds(50))
+    .retry(maxAttempts: 3, delay: .milliseconds(50))
     .build()
 
     try await source.refresh()
@@ -106,7 +106,7 @@ struct RetryTests {
     } emptyValue: {
       "empty"
     }
-    .retry(count: 5, delay: .milliseconds(10)) { error in
+    .retry(maxAttempts: 5, delay: .milliseconds(10)) { error in
       if error is StopRetryError {
         return .stop  // Stop retrying
       }
@@ -179,7 +179,7 @@ struct RetryTests {
     }
   }
 
-  /// Verifies that `.retry(count:)` stops retrying after exactly `maxAttempts` invocations even
+  /// Verifies that `.retry(maxAttempts:)` stops retrying after exactly `maxAttempts` invocations even
   /// when the fetch never succeeds. The fetch always throws; the test asserts that `refresh()`
   /// eventually rethrows and the fetch closure was called exactly 3 times (matching `count: 3`).
   @Test("Max attempts stops retry")
@@ -198,7 +198,7 @@ struct RetryTests {
     } emptyValue: {
       "empty"
     }
-    .retry(count: 3)
+    .retry(maxAttempts: 3)
     .build()
 
     do {
@@ -341,7 +341,7 @@ struct RetryTests {
     } emptyValue: {
       "empty"
     }
-    .retry(count: 3, delay: .milliseconds(1)) { _ in
+    .retry(maxAttempts: 3, delay: .milliseconds(1)) { _ in
       await state.attemptCount < 2 ? .retry : .stop
     }
     .build()
@@ -358,7 +358,7 @@ struct RetryTests {
   }
 
   /// Verifies that `maxAttempts` is a hard ceiling even when the per-attempt handler always returns
-  /// `.retry`. The fetch always fails and the handler always signals `.retry`, but `retry(count: 3)`
+  /// `.retry`. The fetch always fails and the handler always signals `.retry`, but `retry(maxAttempts: 3)`
   /// must still stop after exactly 3 invocations and propagate the error to the caller.
   @Test("Retry per-attempt handler returning .retry on the last attempt still exhausts and throws")
   func retryHandlerRetryOnLastAttemptStillThrows() async throws {
@@ -376,7 +376,7 @@ struct RetryTests {
     } emptyValue: {
       "empty"
     }
-    .retry(count: 3) { _ in
+    .retry(maxAttempts: 3) { _ in
       .retry  // always request retry — but maxAttempts must still be respected
     }
     .build()
@@ -416,7 +416,7 @@ struct RetryTests {
     } emptyValue: {
       "empty"
     }
-    .retry(count: 5, delay: .milliseconds(10)) { error in
+    .retry(maxAttempts: 5, delay: .milliseconds(10)) { error in
       if error is CriticalError {
         return .stop  // Stop retrying
       }
@@ -440,11 +440,11 @@ struct RetryTests {
     #expect(await state.attempts == 2)
   }
 
-  /// Verifies that `.retry(count: 0)` does not crash and behaves as a single attempt with no
+  /// Verifies that `.retry(maxAttempts: 0)` does not crash and behaves as a single attempt with no
   /// retries. Historically this crashed at fetch time with "Range requires lowerBound <=
   /// upperBound" because the retry loop iterated `1...maxAttempts`. The fetch closure must run
   /// exactly once and its error must propagate to the caller.
-  @Test("retry(count: 0) performs a single attempt without crashing")
+  @Test("retry(maxAttempts: 0) performs a single attempt without crashing")
   func retryCountZeroSingleAttempt() async throws {
     actor State {
       var attempts = 0
@@ -460,7 +460,7 @@ struct RetryTests {
     } emptyValue: {
       "empty"
     }
-    .retry(count: 0)
+    .retry(maxAttempts: 0)
     .build()
 
     do {
@@ -473,9 +473,9 @@ struct RetryTests {
     #expect(await state.attempts == 1)
   }
 
-  /// Verifies that `.retry(count: 1)` means exactly one total attempt — the fetch runs once and
+  /// Verifies that `.retry(maxAttempts: 1)` means exactly one total attempt — the fetch runs once and
   /// a failure is not retried, matching the "count includes the first attempt" semantics.
-  @Test("retry(count: 1) performs exactly one attempt")
+  @Test("retry(maxAttempts: 1) performs exactly one attempt")
   func retryCountOneSingleAttempt() async throws {
     actor State {
       var attempts = 0
@@ -491,7 +491,7 @@ struct RetryTests {
     } emptyValue: {
       "empty"
     }
-    .retry(count: 1)
+    .retry(maxAttempts: 1)
     .build()
 
     do {
@@ -505,8 +505,8 @@ struct RetryTests {
   }
 
   /// Verifies that calling `.retry()` multiple times on a `DataSourceBuilder` applies only the
-  /// last configuration, discarding all earlier ones. The builder chains `.retry(count: 10)` then
-  /// `.retry(count: 2)`; the fetch always fails and the test asserts the closure was called
+  /// last configuration, discarding all earlier ones. The builder chains `.retry(maxAttempts: 10)` then
+  /// `.retry(maxAttempts: 2)`; the fetch always fails and the test asserts the closure was called
   /// exactly 2 times, confirming the second call won.
   @Test("Last .retry() call on the builder overrides previous retry configuration")
   func builderLastRetryWins() async throws {
@@ -524,8 +524,8 @@ struct RetryTests {
     } emptyValue: {
       "empty"
     }
-    .retry(count: 10)  // first call — should be overridden
-    .retry(count: 2)  // last call — should win
+    .retry(maxAttempts: 10)  // first call — should be overridden
+    .retry(maxAttempts: 2)  // last call — should win
     .build()
 
     do { try await source.refresh() } catch {}
