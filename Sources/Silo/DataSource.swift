@@ -162,13 +162,16 @@ public final class DataSource<Value: Sendable>: Sendable {
     debounceCounter = 0
     autoRefreshTask?.cancel()
     autoRefreshTask = nil
-    for continuation in valueContinuations.values { continuation.finish() }
+    let valueConts = Array(valueContinuations.values)
     valueContinuations.removeAll()
-    for continuation in stateContinuations.values { continuation.finish() }
+    let stateConts = Array(stateContinuations.values)
     stateContinuations.removeAll()
-    for continuation in valueWithStateContinuations.values { continuation.finish() }
+    let valueWithStateConts = Array(valueWithStateContinuations.values)
     valueWithStateContinuations.removeAll()
     activeSubscriberCount = 0
+    for continuation in valueConts { continuation.finish() }
+    for continuation in stateConts { continuation.finish() }
+    for continuation in valueWithStateConts { continuation.finish() }
     throttleExpiryTime = nil
     autoRefreshPaused = false
     isRefreshing = false
@@ -236,12 +239,12 @@ public final class DataSource<Value: Sendable>: Sendable {
 
       continuation.onTermination = { [weak self] _ in
         Task { @MainActor [weak self] in
-          self?.valueContinuations.removeValue(forKey: id)
-          if let self = self {
-            self.activeSubscriberCount -= 1
-            if self.activeSubscriberCount == 0 && self.autoRefreshInterval != nil {
-              self.suspendAutoRefresh()
-            }
+          // Only decrement while still registered — terminate() drains the registry
+          // first and accounts for all subscribers itself.
+          guard let self = self, self.valueContinuations.removeValue(forKey: id) != nil else { return }
+          self.activeSubscriberCount -= 1
+          if self.activeSubscriberCount == 0 && self.autoRefreshInterval != nil {
+            self.suspendAutoRefresh()
           }
         }
       }
@@ -349,12 +352,14 @@ public final class DataSource<Value: Sendable>: Sendable {
 
       continuation.onTermination = { [weak self] _ in
         Task { @MainActor [weak self] in
-          self?.valueWithStateContinuations.removeValue(forKey: id)
-          if let self = self {
-            self.activeSubscriberCount -= 1
-            if self.activeSubscriberCount == 0 && self.autoRefreshInterval != nil {
-              self.suspendAutoRefresh()
-            }
+          // Only decrement while still registered — terminate() drains the registry
+          // first and accounts for all subscribers itself.
+          guard let self = self, self.valueWithStateContinuations.removeValue(forKey: id) != nil else {
+            return
+          }
+          self.activeSubscriberCount -= 1
+          if self.activeSubscriberCount == 0 && self.autoRefreshInterval != nil {
+            self.suspendAutoRefresh()
           }
         }
       }
@@ -611,13 +616,19 @@ public final class DataSource<Value: Sendable>: Sendable {
     debounceCounter = 0
     autoRefreshTask?.cancel()
     autoRefreshTask = nil
-    for continuation in valueContinuations.values { continuation.finish() }
+    // Drain the registries before finishing so the onTermination handlers
+    // (which decrement the subscriber count) see the continuations as already
+    // unregistered — otherwise the count would go negative.
+    let valueConts = Array(valueContinuations.values)
     valueContinuations.removeAll()
-    for continuation in stateContinuations.values { continuation.finish() }
+    let stateConts = Array(stateContinuations.values)
     stateContinuations.removeAll()
-    for continuation in valueWithStateContinuations.values { continuation.finish() }
+    let valueWithStateConts = Array(valueWithStateContinuations.values)
     valueWithStateContinuations.removeAll()
     activeSubscriberCount = 0
+    for continuation in valueConts { continuation.finish() }
+    for continuation in stateConts { continuation.finish() }
+    for continuation in valueWithStateConts { continuation.finish() }
     throttleExpiryTime = nil
     autoRefreshPaused = false
     isRefreshing = false

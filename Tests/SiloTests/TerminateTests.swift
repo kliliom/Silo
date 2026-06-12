@@ -95,6 +95,49 @@ struct TerminateTests {
     _ = try? await source.refresh()
   }
 
+  /// Verifies that the active subscriber count stays consistent across `terminate()`. Historically
+  /// `terminate()` zeroed the count *and* the finished continuations' onTermination handlers
+  /// decremented it again, driving it negative — so subscribers arriving after `terminate()` never
+  /// reached the "first subscriber" threshold and auto-refresh never started again.
+  @Test("Subscriber count stays consistent after terminate()")
+  func subscriberCountConsistentAfterTerminate() async throws {
+    actor State {
+      var fetchCount = 0
+      func increment() { fetchCount += 1 }
+    }
+    let state = State()
+
+    let source = dataSource {
+      await state.increment()
+      return await state.fetchCount
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      0
+    }
+    .autoRefresh(.milliseconds(10))
+    .build()
+
+    let task1 = Task { for await _ in source.values {} }
+    let task2 = Task { for await _ in source.values {} }
+    try await Task.sleep(for: .milliseconds(20))
+
+    source.terminate()
+    // Let the onTermination handlers run; they must not double-decrement the count
+    try await Task.sleep(for: .milliseconds(50))
+    task1.cancel()
+    task2.cancel()
+    let countAtTerminate = await state.fetchCount
+
+    // A new subscriber must be recognized as the first one and restart auto-refresh
+    let task3 = Task { for await _ in source.values {} }
+    try await Task.sleep(for: .milliseconds(50))
+    let countAfterResub = await state.fetchCount
+    task3.cancel()
+
+    #expect(countAfterResub > countAtTerminate)
+  }
+
   /// Verifies that `terminate()` cancels an active auto-refresh timer and prevents further periodic
   /// fetches. A 20 ms auto-refresh is started with a subscriber; after observing at least one
   /// fetch, `terminate()` is called and the fetch count must remain stable across a subsequent
