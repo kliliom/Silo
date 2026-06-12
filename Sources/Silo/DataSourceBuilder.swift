@@ -208,6 +208,7 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   private var retryErrorHandler: (@Sendable (Error) async -> RetryErrorAction)?
   private var retryTolerance: Duration?
   private var prerequisites: [DataSourceRefreshPrerequisite] = []
+  private var built = false
 
   init<each Dependency: Sendable>(
     dependency: repeat DataSourceDependency<each Dependency>,
@@ -639,6 +640,11 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   /// After building, the data source is ready to use but starts in an empty state.
   /// Call `refresh()` to fetch initial data.
   ///
+  /// > Important: `build()` may only be called once per builder. The builder owns a single
+  /// > dependency coordinator, and dependency `AsyncStream`s only support one consumer —
+  /// > a second build would silently split dependency emissions between the two sources.
+  /// > Calling it again triggers a precondition failure.
+  ///
   /// - Returns: A configured DataSource instance
   ///
   /// Example:
@@ -652,6 +658,12 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   /// let data = try await source.refresh()
   /// ```
   public func build() -> DataSource<Value> {
+    precondition(
+      !built,
+      "build() may only be called once per DataSourceBuilder — dependency streams support a single consumer"
+    )
+    built = true
+
     let dataSource = DataSource(
       fetch: fetch,
       errorHandler: errorHandler,
