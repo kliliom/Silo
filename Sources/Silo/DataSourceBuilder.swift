@@ -546,6 +546,9 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   /// Because ``DataSource/refresh(clear:)`` deduplicates in-flight requests, calling this on a
   /// source that is already refreshing simply joins the existing task — no redundant work is done.
   ///
+  /// > Warning: Don't make two sources refresh each other this way. Each fetch would wait on the
+  /// > other's, which is waiting on the first — neither ever completes.
+  ///
   /// - Parameter source: The data source to refresh before fetching
   /// - Returns: The builder for method chaining
   ///
