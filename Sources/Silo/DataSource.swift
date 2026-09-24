@@ -105,6 +105,8 @@ public final class DataSource<Value: Sendable>: Sendable {
   // Monotonic: bumping it supersedes every caller waiting in the debounce stage.
   // Never reset — reusing a value would let a superseded caller through.
   var debounceCounter: Int = 0
+  // Bumped by cancelRefresh()/terminate() to cancel callers waiting out a throttle window.
+  var waitGeneration: Int = 0
   var autoRefreshTask: Task<Void, Never>?
   var autoRefreshPaused: Bool = false
 
@@ -438,9 +440,14 @@ public final class DataSource<Value: Sendable>: Sendable {
     if throttleDuration != nil, !isEmpty {
       if let expiryTime = throttleExpiryTime, ContinuousClock.now < expiryTime {
         if throttleLast {
+          let generation = waitGeneration
           let waitDuration = expiryTime - ContinuousClock.now
           if waitDuration > .zero {
             try await Task.sleep(for: waitDuration, tolerance: throttleTolerance)
+          }
+          // cancelRefresh()/terminate() during the wait cancels this caller
+          guard generation == waitGeneration else {
+            throw CancellationError()
           }
         } else {
           return cachedValue
@@ -487,7 +494,8 @@ public final class DataSource<Value: Sendable>: Sendable {
   /// - Optionally clears cached data
   ///
   /// Any pending `refresh()` calls waiting on the cancelled task will receive
-  /// a cancellation error.
+  /// a cancellation error. So will callers still waiting in the debounce stage or
+  /// for a throttle window (`throttle(_:tolerance:last:)` with `last: true`).
   ///
   /// Cancellation does not invoke the `onError` handler: the cached value is always
   /// preserved unless `clear: true` is passed. A fetch closure that does not cooperate
@@ -511,6 +519,7 @@ public final class DataSource<Value: Sendable>: Sendable {
   /// }
   /// ```
   public func cancelRefresh(clear: Bool = false) {
+    supersedeWaiters()
     let hadFetchInFlight = currentFetchTask != nil
     currentFetchTask?.cancel()
     currentFetchTask = nil
@@ -636,9 +645,7 @@ public final class DataSource<Value: Sendable>: Sendable {
     ttlExpiryTask?.cancel()
     ttlExpiryTask = nil
     ttlExpiryTime = nil
-    debounceCounter += 1
-    debounceTask?.cancel()
-    debounceTask = nil
+    supersedeWaiters()
     autoRefreshTask?.cancel()
     autoRefreshTask = nil
     // Drain the registries before finishing so the onTermination handlers
@@ -660,6 +667,14 @@ public final class DataSource<Value: Sendable>: Sendable {
     // Keep the dedup tracker in sync with the silent isRefreshing reset above,
     // so a post-terminate refresh is not mistaken for a duplicate emission.
     lastEmittedState = DataSourceState(isRefreshing: isRefreshing, isEmpty: isEmpty)
+  }
+
+  /// Cancels every caller waiting in the debounce stage or for a throttle window.
+  private func supersedeWaiters() {
+    debounceCounter += 1
+    debounceTask?.cancel()
+    debounceTask = nil
+    waitGeneration += 1
   }
 
   // MARK: - Methods
