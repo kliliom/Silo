@@ -669,6 +669,13 @@ public final class DataSource<Value: Sendable>: Sendable {
     waitGeneration += 1
   }
 
+  /// Drops the TTL and throttle windows so the next `refresh()` fetches. Used when a dependency
+  /// configured with `invalidate: true` changes.
+  func invalidateTimedCache() {
+    ttlExpiryTime = nil
+    throttleExpiryTime = nil
+  }
+
   // MARK: - Methods
 
   func performFetch() async throws -> Value {

@@ -127,6 +127,10 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
         guard let self = self, let dataSource = dataSource else { return }
         self.updateValue(at: index, with: streamValue)
 
+        if source.invalidate {
+          dataSource.invalidateTimedCache()
+        }
+
         // Check if we should refresh based on policy
         let shouldRefresh = dataSource.shouldRefreshForPolicy(source.policy)
 
