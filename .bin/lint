@@ -5,5 +5,8 @@ set -e
 # Set working directory to the repository root
 cd "${0%/*}/.."
 
-# Run linting tool
-swift format lint --strict --parallel --recursive Sources Tests
+# Run linting tool. DocC tutorial resources use their own configuration (4-space
+# indentation, matching .bin/format), so they are linted separately.
+swift format lint --strict --parallel Sources/Silo/*.swift
+swift format lint --strict --parallel --recursive Tests
+swift format lint --strict --parallel --recursive --configuration .swift-format-docs Sources/Silo/Documentation.docc

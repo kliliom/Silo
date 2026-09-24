@@ -23,6 +23,8 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
 
   init(dependency: repeat DataSourceDependency<each Dependency>) {
     self.dependency = (repeat each dependency)
+    // `?` sugar cannot wrap a pack element here
+    // swift-format-ignore: UseShorthandTypeNames
     valueStore = (repeat (Optional<each Dependency>).none)
   }
 
