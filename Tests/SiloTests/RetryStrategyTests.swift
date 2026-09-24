@@ -109,4 +109,32 @@ struct RetryStrategyTests {
     #expect(strategy.delay(for: 3) == .milliseconds(9))
     #expect(strategy.delay(for: 4) == .milliseconds(16))
   }
+
+  /// Verifies that exponential backoff cannot overflow `Duration` — a huge initial delay and
+  /// attempt number return a large finite delay instead of trapping — and that `maxDelay` caps
+  /// the result before any overflow could happen.
+  @Test("Exponential backoff with huge inputs does not trap and honours maxDelay")
+  func exponentialBackoffHugeInputs() {
+    let uncapped = RetryStrategy.exponentialBackoff(maxAttempts: 1000, initialDelay: .seconds(1_000_000))
+    #expect(uncapped.delay(for: 999) > .zero)
+
+    let capped = RetryStrategy.exponentialBackoff(
+      maxAttempts: 1000,
+      initialDelay: .seconds(1_000_000),
+      maxDelay: .seconds(30)
+    )
+    #expect(capped.delay(for: 999) == .seconds(30))
+  }
+
+  /// Verifies that negative or NaN multipliers, and negative linear increments, never produce a
+  /// negative delay.
+  @Test("Backoff never returns a negative delay")
+  func backoffNeverNegative() {
+    let negative = RetryStrategy.exponentialBackoff(maxAttempts: 5, initialDelay: .seconds(1), multiplier: -2)
+    #expect(negative.delay(for: 2) == .zero)
+    let nan = RetryStrategy.exponentialBackoff(maxAttempts: 5, initialDelay: .seconds(1), multiplier: .nan)
+    #expect(nan.delay(for: 2) == .zero)
+    let linear = RetryStrategy.linearBackoff(maxAttempts: 5, initialDelay: .seconds(1), increment: .seconds(-2))
+    #expect(linear.delay(for: 3) == .zero)
+  }
 }
