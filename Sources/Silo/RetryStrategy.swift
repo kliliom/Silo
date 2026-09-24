@@ -93,8 +93,16 @@ public struct RetryStrategy: Sendable {
     maxDelay: Duration? = nil
   ) -> RetryStrategy {
     RetryStrategy(maxAttempts: maxAttempts) { attemptNumber in
-      // Clamp the factor so extreme attempt counts cannot overflow Duration arithmetic.
-      let factor = min(pow(multiplier, Double(attemptNumber - 1)), 1e15)
+      let factor = pow(multiplier, Double(attemptNumber - 1))
+      // Estimate in Double first: the exact Duration product can overflow (and trap) for
+      // large delays or attempt counts, and maxDelay must cap it before that happens.
+      let seconds = initialDelay.approximateSeconds * factor
+      // Negative, zero, or NaN (from a negative or NaN multiplier) — retry immediately
+      guard seconds > 0 else { return .zero }
+      let limit = maxDelay.map { min($0, maximumRetryDelay) } ?? maximumRetryDelay
+      if seconds >= limit.approximateSeconds {
+        return max(limit, .zero)
+      }
       var delay = initialDelay * factor
       if let maxDelay = maxDelay, delay > maxDelay {
         delay = maxDelay
@@ -131,7 +139,8 @@ public struct RetryStrategy: Sendable {
     increment: Duration
   ) -> RetryStrategy {
     RetryStrategy(maxAttempts: maxAttempts) { attemptNumber in
-      initialDelay + (increment * (attemptNumber - 1))
+      // A negative increment can drive the delay below zero; retry immediately instead
+      max(initialDelay + (increment * (attemptNumber - 1)), .zero)
     }
   }
 
@@ -170,5 +179,15 @@ public struct RetryStrategy: Sendable {
     delayCalculator: @escaping @Sendable (Int) -> Duration
   ) -> RetryStrategy {
     RetryStrategy(maxAttempts: maxAttempts, delayCalculator: delayCalculator)
+  }
+}
+
+/// Upper bound for computed backoff delays (about 31,700 years) — far beyond any practical
+/// delay, and well inside `Duration`'s range so the arithmetic cannot overflow.
+private let maximumRetryDelay = Duration.seconds(1_000_000_000_000)
+
+extension Duration {
+  fileprivate var approximateSeconds: Double {
+    Double(components.seconds) + Double(components.attoseconds) * 1e-18
   }
 }
