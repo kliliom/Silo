@@ -292,23 +292,20 @@ struct DependencyTests {
     continuationB.finish()
   }
 
-  /// Verifies that `.debounce()` is applied to dependency-triggered refreshes, collapsing rapid
-  /// upstream emissions into a single fetch. Three values are yielded to the dependency stream in
-  /// quick succession; after the debounce window closes, the test asserts the fetch closure was
-  /// invoked exactly once.
+  /// Verifies that `.debounce()` coalesces dependency-triggered refreshes into a single fetch of
+  /// the *latest* value. Three values are yielded to the dependency stream in quick succession;
+  /// long after the debounce window closes, exactly one fetch must have run, and it must have
+  /// received the last value. (Previously each emission was queued and fetched in turn, first
+  /// value first — an early assertion hid that.)
   @Test("Dependency changes are debounced if debounce is set")
   func dependencyWithDebounce() async throws {
-    actor State {
-      var fetchCount = 0
-      func increment() { fetchCount += 1 }
-    }
-    let state = State()
+    let fetched = Recorder<Int>()
 
     let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
     let dependency = stream.dependency(.eager)
 
     let source = dataSource(dependency) { value in
-      await state.increment()
+      await fetched.append(value)
       return "fetch-\(value)"
     } onError: { _ in
       .keep
@@ -328,11 +325,11 @@ struct DependencyTests {
     try await Task.sleep(for: .milliseconds(20))
     continuation.yield(3)
 
-    // Wait for debounce
-    try await Task.sleep(for: .milliseconds(150))
+    // Wait well past several debounce windows so any queued fetch would have landed
+    try await Task.sleep(for: .milliseconds(400))
 
-    // Should only fetch once with last value
-    #expect(await state.fetchCount == 1)
+    #expect(await fetched.items == [3])
+    #expect(await iterator.next() == "fetch-3")
 
     continuation.finish()
   }
@@ -697,6 +694,142 @@ struct DependencyTests {
       // Expected
     }
 
+    continuation.finish()
+  }
+
+  /// Verifies that a dependency change during an in-flight manual fetch is not lost. The manual
+  /// fetch read the old dependency value; the dependency-triggered refresh joins it, sees that it
+  /// did not cover the new value, and follows up with a fetch for it.
+  @Test("Dependency change during an in-flight manual fetch triggers a follow-up fetch")
+  func dependencyChangeDuringManualFetch() async throws {
+    let fetched = Recorder<Int>()
+    let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+    let source = dataSource(stream.dependency(.eager)) { value in
+      await fetched.append(value)
+      try await Task.sleep(for: .milliseconds(100))
+      return "v\(value)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    continuation.yield(1)
+    try await Task.sleep(for: .milliseconds(200))
+    let manual = Task { try await source.refresh() }
+    try await Task.sleep(for: .milliseconds(20))
+    continuation.yield(2)
+    #expect(try await manual.value == "v1")
+    try await Task.sleep(for: .milliseconds(300))
+
+    #expect(await fetched.items == [1, 1, 2])
+    var iterator = source.values.makeAsyncIterator()
+    #expect(await iterator.next() == "v2")
+    continuation.finish()
+  }
+
+  /// Verifies that with two eager dependencies emitting together, the source ends on a fetch that
+  /// saw both new values.
+  @Test("Concurrent emissions from two dependencies end on the latest combination")
+  func twoDependenciesEmitTogether() async throws {
+    let (streamA, continuationA) = AsyncStream.makeStream(of: Int.self)
+    let (streamB, continuationB) = AsyncStream.makeStream(of: String.self)
+    let source = dataSource(streamA.dependency(.eager), streamB.dependency(.eager)) { a, b in
+      try await Task.sleep(for: .milliseconds(30))
+      return "\(a)-\(b)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    continuationA.yield(1)
+    continuationB.yield("x")
+    try await Task.sleep(for: .milliseconds(150))
+    continuationA.yield(2)
+    try await Task.sleep(for: .milliseconds(10))
+    continuationB.yield("y")
+    try await Task.sleep(for: .milliseconds(300))
+
+    var iterator = source.values.makeAsyncIterator()
+    #expect(await iterator.next() == "2-y")
+    continuationA.finish()
+    continuationB.finish()
+  }
+
+  /// Verifies three dependencies with mixed policies: eager changes fetch right away, a lazy change
+  /// without subscribers waits for one, and a manual change only takes effect on the next refresh.
+  @Test("Three dependencies with mixed policies")
+  func threeDependenciesMixedPolicies() async throws {
+    let fetchCount = Counter()
+    let (eager, eagerContinuation) = AsyncStream.makeStream(of: Int.self)
+    let (lazy, lazyContinuation) = AsyncStream.makeStream(of: Int.self)
+    let (manual, manualContinuation) = AsyncStream.makeStream(of: Int.self)
+    let eagerDependency = eager.dependency(.eager)
+    let lazyDependency = lazy.dependency(.lazy)
+    let manualDependency = manual.dependency(.manual)
+    let source = dataSource(eagerDependency, lazyDependency, manualDependency) { e, l, m in
+      await fetchCount.increment()
+      return "\(e)-\(l)-\(m)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    manualContinuation.yield(0)
+    lazyContinuation.yield(0)
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(await fetchCount.value == 0)  // eager value still missing
+
+    eagerContinuation.yield(1)
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(await fetchCount.value == 1)
+
+    lazyContinuation.yield(2)  // no subscribers: deferred
+    manualContinuation.yield(3)  // never triggers
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(await fetchCount.value == 1)
+
+    var iterator = source.values.makeAsyncIterator()
+    #expect(await iterator.next() == "1-0-0")
+    #expect(await iterator.next() == "1-2-3")  // pending lazy refresh, sees the manual value too
+    #expect(await fetchCount.value == 2)
+
+    eagerContinuation.finish()
+    lazyContinuation.finish()
+    manualContinuation.finish()
+  }
+
+  /// Verifies that a pending lazy refresh honours the dependency's `clear:` flag when the first
+  /// subscriber arrives: the empty value is emitted before the new fetch lands.
+  @Test("Pending lazy refresh honours clear:")
+  func pendingLazyRefreshHonoursClear() async throws {
+    let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+    let source = dataSource(stream.dependency(.lazy, clear: true)) { value in
+      try await Task.sleep(for: .milliseconds(20))
+      return "fetch-\(value)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    continuation.yield(1)
+    try await Task.sleep(for: .milliseconds(20))
+    _ = try await source.refresh()  // cached "fetch-1", no subscribers
+
+    continuation.yield(2)  // pending, with clear
+    try await Task.sleep(for: .milliseconds(20))
+
+    var iterator = source.values.makeAsyncIterator()
+    #expect(await iterator.next() == "fetch-1")
+    #expect(await iterator.next() == "empty")
+    #expect(await iterator.next() == "fetch-2")
     continuation.finish()
   }
 }
