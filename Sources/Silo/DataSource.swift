@@ -902,13 +902,13 @@ public final class DataSource<Value: Sendable>: Sendable {
     ttlExpiryTime = ContinuousClock.now.advanced(by: ttlDuration)
 
     ttlExpiryTask?.cancel()
+    ttlExpiryTask = nil
+    // Freshness is checked against the deadline; a timer is only needed to auto-clear
+    guard ttlClear else { return }
     ttlExpiryTask = Task { [weak self] in
       try? await Task.sleep(for: ttlDuration, tolerance: self?.ttlTolerance)
       guard !Task.isCancelled, let self = self else { return }
-
-      if self.ttlClear {
-        self.clear()
-      }
+      self.clear()
     }
   }
 
