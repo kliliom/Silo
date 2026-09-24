@@ -99,6 +99,8 @@ public final class DataSource<Value: Sendable>: Sendable {
   var throttleExpiryTime: ContinuousClock.Instant?
   var ttlExpiryTask: Task<Void, Never>?
   var debounceTask: Task<Void, Never>?
+  // Monotonic: bumping it supersedes every caller waiting in the debounce stage.
+  // Never reset — reusing a value would let a superseded caller through.
   var debounceCounter: Int = 0
   var autoRefreshTask: Task<Void, Never>?
   var autoRefreshPaused: Bool = false
@@ -627,9 +629,9 @@ public final class DataSource<Value: Sendable>: Sendable {
     ttlExpiryTask?.cancel()
     ttlExpiryTask = nil
     ttlExpiryTime = nil
+    debounceCounter += 1
     debounceTask?.cancel()
     debounceTask = nil
-    debounceCounter = 0
     autoRefreshTask?.cancel()
     autoRefreshTask = nil
     // Drain the registries before finishing so the onTermination handlers
@@ -876,9 +878,10 @@ public final class DataSource<Value: Sendable>: Sendable {
 
     throttleExpiryTime = nil
 
+    // Supersede debounced callers without reusing counter values
+    debounceCounter += 1
     debounceTask?.cancel()
     debounceTask = nil
-    debounceCounter = 0
 
     if autoRefreshInterval != nil {
       startAutoRefresh(immediate: false)
