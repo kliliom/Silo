@@ -395,4 +395,33 @@ struct BeforeFetchTests {
     var iterator = source.values.makeAsyncIterator()
     #expect(await iterator.next() == "data")
   }
+
+  /// Verifies that `failableBeforeFetch` swallows ordinary errors but not cancellation: a fetch
+  /// cancelled while the hook runs does not proceed to the fetch closure.
+  @Test("failableBeforeFetch propagates cancellation")
+  func failableBeforeFetchPropagatesCancellation() async throws {
+    let fetchCount = Counter()
+    let hookStarted = Semaphore(value: 0)
+    let source = dataSource {
+      await fetchCount.increment()
+      return "data"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .failableBeforeFetch {
+      await hookStarted.signal()
+      try await Task.sleep(for: .seconds(10))
+    }
+    .build()
+
+    let caller = Task { try await source.refresh() }
+    await hookStarted.wait()
+    source.cancelRefresh()
+
+    await #expect(throws: CancellationError.self) { try await caller.value }
+    try await Task.sleep(for: .milliseconds(20))
+    #expect(await fetchCount.value == 0)
+  }
 }

@@ -532,4 +532,40 @@ struct RetryTests {
 
     #expect(await state.attempts == 2)
   }
+
+  /// Verifies that the per-attempt retry handler never receives a cancellation: cancelling during
+  /// an attempt or during the retry sleep ends the loop, with no further attempts.
+  @Test("Retry handler is never called for cancellation")
+  func retryHandlerNeverSeesCancellation() async throws {
+    for cancelDuringSleep in [false, true] {
+      let handlerSawCancellation = Recorder<Bool>()
+      let attempts = Counter()
+      let source = dataSource { () async throws -> String in
+        await attempts.increment()
+        if cancelDuringSleep { throw URLError(.timedOut) }
+        try await Task.sleep(for: .seconds(10))
+        return "x"
+      } onError: { _ in
+        .keep
+      } emptyValue: {
+        "empty"
+      }
+      .retry(maxAttempts: 3, delay: .seconds(10)) { error in
+        await handlerSawCancellation.append(error is CancellationError)
+        return .retry
+      }
+      .build()
+
+      let caller = Task { try await source.refresh() }
+      try await Task.sleep(for: .milliseconds(30))
+      source.cancelRefresh()
+      await #expect(throws: CancellationError.self) { try await caller.value }
+      try await Task.sleep(for: .milliseconds(20))
+
+      #expect(await attempts.value == 1, "cancelDuringSleep: \(cancelDuringSleep)")
+      // The URLError from the first attempt reaches the handler; a cancellation never does
+      let expected = cancelDuringSleep ? [false] : []
+      #expect(await handlerSawCancellation.items == expected, "cancelDuringSleep: \(cancelDuringSleep)")
+    }
+  }
 }
