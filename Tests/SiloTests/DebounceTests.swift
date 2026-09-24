@@ -165,4 +165,56 @@ struct DebounceTests {
     #expect(await task.value)
     #expect(await state.fetchCount == 0)
   }
+
+  /// Verifies that the debounce counter is never reused. `clear()` supersedes the waiting caller;
+  /// a new `refresh()` issued before that caller resumes must not let it through (it previously
+  /// did, because `clear()` reset the counter to the value the old caller held).
+  @Test("clear() during debounce supersedes the waiting caller even if refresh() follows")
+  func clearThenRefreshDuringDebounce() async throws {
+    let fetchCount = Counter()
+    let source = dataSource {
+      await fetchCount.increment()
+      return "x"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .debounce(.milliseconds(200))
+    .build()
+
+    let first = Task { try await source.refresh() }
+    try await Task.sleep(for: .milliseconds(20))
+    source.clear()
+    let second = Task { try await source.refresh() }
+
+    await #expect(throws: CancellationError.self) { try await first.value }
+    #expect(try await second.value == "x")
+    #expect(await fetchCount.value == 1)
+  }
+
+  /// Verifies that `cancelRefresh()` cancels callers still waiting in the debounce stage — they
+  /// throw `CancellationError` and never fetch.
+  @Test("cancelRefresh() cancels debounced callers")
+  func cancelRefreshCancelsDebouncedCallers() async throws {
+    let fetchCount = Counter()
+    let source = dataSource {
+      await fetchCount.increment()
+      return "x"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .debounce(.milliseconds(100))
+    .build()
+
+    let caller = Task { try await source.refresh() }
+    try await Task.sleep(for: .milliseconds(20))
+    source.cancelRefresh()
+
+    await #expect(throws: CancellationError.self) { try await caller.value }
+    try await Task.sleep(for: .milliseconds(150))
+    #expect(await fetchCount.value == 0)
+  }
 }

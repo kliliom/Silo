@@ -71,13 +71,14 @@ struct TerminateTests {
   }
 
   /// Verifies that `terminate()` is idempotent — calling it multiple times in a row does not crash
-  /// and leaves all streams finished. After `terminate()` is invoked three times, a newly created
-  /// iterator on `.values` must yield `nil` on its first `next()` call (note: `terminate()` also
-  /// finishes any future subscriptions implicitly, since the source is in a terminated state).
+  /// and leaves the source terminated: a `refresh()` afterwards throws `CancellationError` without
+  /// fetching.
   @Test("terminate() is idempotent")
   func terminateIsIdempotent() async throws {
+    let fetchCount = Counter()
     let source = dataSource {
-      "data"
+      await fetchCount.increment()
+      return "data"
     } onError: { _ in
       .keep
     } emptyValue: {
@@ -89,18 +90,94 @@ struct TerminateTests {
     source.terminate()
     source.terminate()
 
-    // Any existing iterator created before terminate would now yield nil; we verify that
-    // calling terminate repeatedly does not raise or leave the source in an unusable state.
-    // A refresh after terminate must not crash either.
-    _ = try? await source.refresh()
+    await #expect(throws: CancellationError.self) { try await source.refresh() }
+    #expect(await fetchCount.value == 0)
   }
 
-  /// Verifies that the active subscriber count stays consistent across `terminate()`. Historically
-  /// `terminate()` zeroed the count *and* the finished continuations' onTermination handlers
-  /// decremented it again, driving it negative — so subscribers arriving after `terminate()` never
+  /// Verifies that `terminate()` is final: streams created afterwards finish immediately without
+  /// replaying a value, `reset()` cannot revive the source, and `refresh()` keeps throwing.
+  @Test("terminate() is final: new streams finish, refresh throws, reset has no effect")
+  func terminateIsFinal() async throws {
+    let fetchCount = Counter()
+    let source = dataSource {
+      await fetchCount.increment()
+      return "data"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .autoRefresh(.milliseconds(10))
+    .build()
+
+    _ = try await source.refresh()
+    source.terminate()
+    source.reset()
+
+    var values = source.values.makeAsyncIterator()
+    var state = source.state.makeAsyncIterator()
+    var valueWithState = source.valueWithState.makeAsyncIterator()
+    #expect(await values.next() == nil)
+    #expect(await state.next() == nil)
+    #expect(await valueWithState.next() == nil)
+
+    await #expect(throws: CancellationError.self) { try await source.refresh() }
+    await source.restartAutoRefresh(immediate: true)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await fetchCount.value == 1)
+  }
+
+  /// Verifies that a caller already inside `refresh()` when `terminate()` runs receives
+  /// `CancellationError`.
+  @Test("terminate() cancels callers waiting on an in-flight fetch")
+  func terminateCancelsInFlightCaller() async throws {
+    let fetchStarted = Semaphore(value: 0)
+    let source = dataSource {
+      await fetchStarted.signal()
+      try await Task.sleep(for: .seconds(10))
+      return "data"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    let caller = Task { try await source.refresh() }
+    await fetchStarted.wait()
+    source.terminate()
+
+    await #expect(throws: CancellationError.self) { try await caller.value }
+  }
+
+  /// Verifies that `terminate()` stops dependency observation: a later emission does not fetch.
+  @Test("terminate() stops dependency observation")
+  func terminateStopsDependencies() async throws {
+    let fetchCount = Counter()
+    let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+    let source = dataSource(stream.dependency(.eager)) { value in
+      await fetchCount.increment()
+      return "fetch-\(value)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    source.terminate()
+    continuation.yield(1)
+    try await Task.sleep(for: .milliseconds(50))
+    #expect(await fetchCount.value == 0)
+    continuation.finish()
+  }
+
+  /// Verifies that the active subscriber count stays consistent across `reset()`. Historically the
+  /// teardown zeroed the count *and* the finished continuations' onTermination handlers
+  /// decremented it again, driving it negative — so subscribers arriving afterwards never
   /// reached the "first subscriber" threshold and auto-refresh never started again.
-  @Test("Subscriber count stays consistent after terminate()")
-  func subscriberCountConsistentAfterTerminate() async throws {
+  @Test("Subscriber count stays consistent after reset()")
+  func subscriberCountConsistentAfterReset() async throws {
     actor State {
       var fetchCount = 0
       func increment() { fetchCount += 1 }
@@ -122,7 +199,7 @@ struct TerminateTests {
     let task2 = Task { for await _ in source.values {} }
     try await Task.sleep(for: .milliseconds(20))
 
-    source.terminate()
+    source.reset()
     // Let the onTermination handlers run; they must not double-decrement the count
     try await Task.sleep(for: .milliseconds(50))
     task1.cancel()
@@ -174,5 +251,88 @@ struct TerminateTests {
     #expect(countAfterTerminate == countBeforeTerminate)
 
     task.cancel()
+  }
+
+  /// Verifies that `reset()` finishes active streams and keeps the cached value, and that the
+  /// source stays usable: new subscribers replay the cached value and `refresh()` fetches again
+  /// (the TTL window is dropped).
+  @Test("reset() finishes streams, keeps the cache, and leaves the source usable")
+  func resetKeepsSourceUsable() async throws {
+    let fetchCount = Counter()
+    let source = dataSource {
+      await fetchCount.increment()
+      return "data-\(await fetchCount.value)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .ttl(.seconds(60))
+    .build()
+
+    _ = try await source.refresh()
+    var before = source.values.makeAsyncIterator()
+    #expect(await before.next() == "data-1")
+
+    source.reset()
+    #expect(await before.next() == nil)
+
+    var after = source.values.makeAsyncIterator()
+    #expect(await after.next() == "data-1")
+    #expect(try await source.refresh() == "data-2")
+    #expect(await after.next() == "data-2")
+  }
+
+  /// Verifies that dependencies keep driving refreshes after `reset()`, unlike after `terminate()`.
+  @Test("reset() keeps observing dependencies")
+  func resetKeepsDependencies() async throws {
+    let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+    let source = dataSource(stream.dependency(.eager)) { value in
+      "fetch-\(value)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    source.reset()
+    continuation.yield(7)
+    try await Task.sleep(for: .milliseconds(50))
+    var iterator = source.values.makeAsyncIterator()
+    #expect(await iterator.next() == "fetch-7")
+    continuation.finish()
+  }
+
+  /// Verifies that `reset()` cancels an in-flight fetch without invoking `onError` and without
+  /// clearing the cache.
+  @Test("reset() cancels an in-flight fetch and keeps the cache")
+  func resetCancelsInFlightFetch() async throws {
+    let fetchStarted = Semaphore(value: 0)
+    let errorCount = Counter()
+    nonisolated(unsafe) var slow = false
+    let source = dataSource { () async throws -> String in
+      if !slow { return "cached" }
+      await fetchStarted.signal()
+      try await Task.sleep(for: .seconds(10))
+      return "late"
+    } onError: { _ in
+      await errorCount.increment()
+      return .clear
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    _ = try await source.refresh()
+    slow = true
+    let caller = Task { try await source.refresh() }
+    await fetchStarted.wait()
+    source.reset()
+
+    await #expect(throws: CancellationError.self) { try await caller.value }
+    var iterator = source.values.makeAsyncIterator()
+    #expect(await iterator.next() == "cached")
+    #expect(await errorCount.value == 0)
   }
 }

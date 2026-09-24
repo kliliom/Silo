@@ -460,4 +460,68 @@ struct ClearingTests {
     #expect(afterClearEmpty == "empty")
     #expect(afterClearFetched == "fetched")
   }
+
+  /// Verifies that cancelling a fetch that reports cancellation with its own error type — as
+  /// URLSession does with `URLError(.cancelled)` — is still treated as cancellation: `onError` is
+  /// not called, the cache survives, and the caller receives `CancellationError`.
+  @Test("cancelRefresh() with a URLError(.cancelled) fetch keeps the cache and skips onError")
+  func cancelWithURLErrorKeepsCache() async throws {
+    let errorCount = Counter()
+    let fetchStarted = Semaphore(value: 0)
+    nonisolated(unsafe) var slow = false
+    let source = dataSource { () async throws -> String in
+      if !slow { return "cached" }
+      await fetchStarted.signal()
+      do {
+        try await Task.sleep(for: .seconds(10))
+      } catch {
+        throw URLError(.cancelled)
+      }
+      return "late"
+    } onError: { _ in
+      await errorCount.increment()
+      return .clear
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    _ = try await source.refresh()
+    slow = true
+    let caller = Task { try await source.refresh() }
+    await fetchStarted.wait()
+    source.cancelRefresh()
+
+    await #expect(throws: CancellationError.self) { try await caller.value }
+    var iterator = source.valueWithState.makeAsyncIterator()
+    let snapshot = await iterator.next()
+    #expect(snapshot?.value == "cached")
+    #expect(snapshot?.state.isEmpty == false)
+    #expect(await errorCount.value == 0)
+  }
+
+  /// Verifies that `onError` is never invoked when a plain cooperative fetch is cancelled mid-flight.
+  @Test("cancelRefresh() mid-fetch never calls onError")
+  func cancelMidFetchSkipsOnError() async throws {
+    let errorCount = Counter()
+    let fetchStarted = Semaphore(value: 0)
+    let source = dataSource { () async throws -> String in
+      await fetchStarted.signal()
+      try await Task.sleep(for: .seconds(10))
+      return "late"
+    } onError: { _ in
+      await errorCount.increment()
+      return .clear
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    let caller = Task { try await source.refresh() }
+    await fetchStarted.wait()
+    source.cancelRefresh()
+    _ = try? await caller.value
+    try await Task.sleep(for: .milliseconds(20))
+    #expect(await errorCount.value == 0)
+  }
 }

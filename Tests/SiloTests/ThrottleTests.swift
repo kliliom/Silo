@@ -320,4 +320,61 @@ struct ThrottleTests {
     #expect(result == "data-2")
     #expect(await state.fetchCount == 2)
   }
+
+  /// Verifies that callers queued by `throttle(last: true)` are cancelled by `cancelRefresh()` and
+  /// by `terminate()` instead of fetching once the window ends.
+  @Test("Queued throttle callers are cancelled by cancelRefresh() and terminate()")
+  func queuedThrottleCallersAreCancelled() async throws {
+    for useTerminate in [false, true] {
+      let fetchCount = Counter()
+      let source = dataSource {
+        await fetchCount.increment()
+        return "x"
+      } onError: { _ in
+        .keep
+      } emptyValue: {
+        "empty"
+      }
+      .throttle(.milliseconds(100), last: true)
+      .build()
+
+      _ = try await source.refresh()
+      let queued = Task { try await source.refresh() }
+      try await Task.sleep(for: .milliseconds(20))
+      if useTerminate { source.terminate() } else { source.cancelRefresh() }
+
+      await #expect(throws: CancellationError.self, "terminate: \(useTerminate)") {
+        try await queued.value
+      }
+      #expect(await fetchCount.value == 1, "terminate: \(useTerminate)")
+    }
+  }
+
+  /// Verifies that a throttled drop during an in-flight fetch joins that fetch and returns its
+  /// fresh result instead of the stale cached value. An `invalidate: true` dependency starts a
+  /// fetch while cached data exists, which opens a new throttle window; a manual `refresh()`
+  /// during that fetch is dropped by the window and must return the new value.
+  @Test("Throttled drop joins the in-flight fetch")
+  func throttledDropJoinsInFlightFetch() async throws {
+    let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+    let source = dataSource(stream.dependency(.eager, invalidate: true)) { value in
+      try await Task.sleep(for: .milliseconds(50))
+      return "v\(value)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .throttle(.seconds(10))
+    .build()
+
+    continuation.yield(1)
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(try await source.refresh() == "v1")  // dropped by the window, nothing in flight
+
+    continuation.yield(2)  // invalidates the window and starts a fetch for v2
+    try await Task.sleep(for: .milliseconds(10))
+    #expect(try await source.refresh() == "v2")  // dropped again, but joins the in-flight fetch
+    continuation.finish()
+  }
 }
