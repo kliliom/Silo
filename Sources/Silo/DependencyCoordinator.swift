@@ -6,6 +6,7 @@ protocol DependencyCoordinating: Sendable {
 
   func start<T: Sendable>(dataSource: DataSource<T>)
   func stopObserving()
+  func cancelScheduledRefresh()
   func checkPendingLazyRefresh<T: Sendable>(dataSource: DataSource<T>)
   func markRefreshCompleted(upTo version: Int)
 }
@@ -70,6 +71,10 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
   func stopObserving() {
     for task in observerTasks { task.cancel() }
     observerTasks.removeAll()
+    cancelScheduledRefresh()
+  }
+
+  func cancelScheduledRefresh() {
     refreshTask?.cancel()
     refreshTask = nil
   }

@@ -104,7 +104,8 @@ try await service.refresh()
   - `.clear()` — Reset to empty state
   - `.cancelRefresh(clear:)` — Cancel in-flight fetch
   - `.stopAutoRefresh()`, `.resumeAutoRefresh()`, `.restartAutoRefresh(immediate:)`
-  - `.terminate()` — Finish all streams and cancel in-flight work; called automatically on deinit
+  - `.terminate()` — Permanently shut down: finish all streams, cancel in-flight work, stop dependency observation; afterwards `refresh()` throws `CancellationError` and new streams finish immediately. Called automatically on deinit
+  - `.reset()` — Finish all streams and cancel in-flight work but keep the source usable (cache kept, dependencies still observed)
 
 - `DataSourceValueWithState<Value>` — Snapshot pairing `value` and `state`; emitted by `.valueWithState`
 

@@ -96,6 +96,9 @@ public final class DataSource<Value: Sendable>: Sendable {
   var currentFetchID: Int = 0
   var lastFetchID: Int = 0
 
+  /// Set by `terminate()`; a terminated source no longer fetches or accepts subscribers.
+  private(set) var isTerminated: Bool = false
+
   // Timer state — deadlines use ContinuousClock so wall-clock changes
   // (NTP corrections, manual time adjustments) cannot shift them
   var ttlExpiryTime: ContinuousClock.Instant?
@@ -105,7 +108,7 @@ public final class DataSource<Value: Sendable>: Sendable {
   // Monotonic: bumping it supersedes every caller waiting in the debounce stage.
   // Never reset — reusing a value would let a superseded caller through.
   var debounceCounter: Int = 0
-  // Bumped by cancelRefresh()/terminate() to cancel callers waiting out a throttle window.
+  // Bumped by cancelRefresh()/reset()/terminate() to cancel callers waiting out a throttle window.
   var waitGeneration: Int = 0
   var autoRefreshTask: Task<Void, Never>?
   var autoRefreshPaused: Bool = false
@@ -212,6 +215,7 @@ public final class DataSource<Value: Sendable>: Sendable {
   public func values(
     bufferingPolicy limit: AsyncStream<Value>.Continuation.BufferingPolicy = .unbounded
   ) -> AsyncStream<Value> {
+    if isTerminated { return AsyncStream { $0.finish() } }
     let id = UUID()
     return AsyncStream(bufferingPolicy: limit) { continuation in
       // Emit current value immediately
@@ -278,6 +282,7 @@ public final class DataSource<Value: Sendable>: Sendable {
   public func state(
     bufferingPolicy limit: AsyncStream<DataSourceState>.Continuation.BufferingPolicy = .unbounded
   ) -> AsyncStream<DataSourceState> {
+    if isTerminated { return AsyncStream { $0.finish() } }
     let id = UUID()
     return AsyncStream(bufferingPolicy: limit) { continuation in
       // Emit current state immediately
@@ -329,6 +334,7 @@ public final class DataSource<Value: Sendable>: Sendable {
     bufferingPolicy limit: AsyncStream<DataSourceValueWithState<Value>>.Continuation.BufferingPolicy =
       .unbounded
   ) -> AsyncStream<DataSourceValueWithState<Value>> {
+    if isTerminated { return AsyncStream { $0.finish() } }
     let id = UUID()
     return AsyncStream(bufferingPolicy: limit) { continuation in
       // Emit current value and state immediately
@@ -384,6 +390,7 @@ public final class DataSource<Value: Sendable>: Sendable {
   ///
   /// Cancelling the calling task makes this call throw `CancellationError` right away. A fetch
   /// shared with other callers keeps running for them; use ``cancelRefresh(clear:)`` to stop it.
+  /// After ``terminate()``, this always throws `CancellationError`.
   ///
   /// - Parameter clear: If `true`, clears the cache before fetching, bypassing TTL. Default: `false`.
   /// - Returns: The fetched value.
@@ -397,6 +404,8 @@ public final class DataSource<Value: Sendable>: Sendable {
   /// ```
   @discardableResult
   public func refresh(clear: Bool = false) async throws -> Value {
+    if isTerminated { throw CancellationError() }
+
     // clear: resets cache before TTL check so the cleared state is observed
     if clear {
       self.clear()
@@ -437,7 +446,7 @@ public final class DataSource<Value: Sendable>: Sendable {
           if waitDuration > .zero {
             try await Task.sleep(for: waitDuration, tolerance: throttleTolerance)
           }
-          // cancelRefresh()/terminate() during the wait cancels this caller
+          // cancelRefresh()/reset()/terminate() during the wait cancels this caller
           guard generation == waitGeneration else {
             throw CancellationError()
           }
@@ -624,18 +633,49 @@ public final class DataSource<Value: Sendable>: Sendable {
     }
   }
 
-  /// Cancels all in-flight tasks and finishes all active streams.
+  /// Permanently shuts the data source down.
   ///
-  /// After calling this, all `values`, `state`, and `valueWithState` streams finish,
-  /// signalling end-of-sequence to their subscribers. Any in-flight `refresh()` call
-  /// is cancelled, and dependency streams are no longer observed. Call this for eager
-  /// resource cleanup; `deinit` performs the same cleanup automatically.
+  /// Cancels any in-flight `refresh()`, stops all timers and dependency observation, and
+  /// finishes all `values`, `state`, and `valueWithState` streams, signalling end-of-sequence to
+  /// their subscribers. The source stays shut down afterwards:
+  /// - `refresh()` throws `CancellationError`
+  /// - new `values`, `state`, and `valueWithState` streams finish immediately
+  /// - auto-refresh controls and ``reset()`` have no effect
+  ///
+  /// Calling it more than once is harmless. `deinit` performs the same cleanup automatically.
+  /// To drop subscribers and in-flight work but keep using the source, call ``reset()`` instead.
   ///
   /// ```swift
   /// dataSource.terminate()
   /// ```
   public func terminate() {
+    guard !isTerminated else { return }
+    isTerminated = true
     dependencyCoordinator?.stopObserving()
+    tearDown()
+  }
+
+  /// Cancels all in-flight work and finishes all active streams, leaving the source usable.
+  ///
+  /// Cancels any in-flight or waiting `refresh()` calls, stops the TTL and auto-refresh timers,
+  /// and finishes all current `values`, `state`, and `valueWithState` streams. The cached value
+  /// is kept, but its TTL window is dropped, so the next `refresh()` fetches.
+  ///
+  /// Unlike ``terminate()``, the source keeps working: dependencies are still observed, and new
+  /// subscribers restart auto-refresh as usual. Has no effect after ``terminate()``.
+  ///
+  /// ```swift
+  /// // Detach every screen observing the source, e.g. when switching accounts
+  /// userSource.reset()
+  /// ```
+  public func reset() {
+    guard !isTerminated else { return }
+    dependencyCoordinator?.cancelScheduledRefresh()
+    tearDown()
+  }
+
+  /// Shared cleanup for `terminate()` and `reset()`. `deinit` performs the nonisolated subset.
+  private func tearDown() {
     currentFetchTask?.cancel()
     currentFetchTask = nil
     ttlExpiryTask?.cancel()
@@ -661,7 +701,7 @@ public final class DataSource<Value: Sendable>: Sendable {
     autoRefreshPaused = false
     isRefreshing = false
     // Keep the dedup tracker in sync with the silent isRefreshing reset above,
-    // so a post-terminate refresh is not mistaken for a duplicate emission.
+    // so a later refresh is not mistaken for a duplicate emission.
     lastEmittedState = DataSourceState(isRefreshing: isRefreshing, isEmpty: isEmpty)
   }
 
@@ -683,6 +723,9 @@ public final class DataSource<Value: Sendable>: Sendable {
   // MARK: - Methods
 
   func performFetch() async throws -> Value {
+    // terminate() may have run while this caller was in a gate (e.g. a prerequisite check)
+    if isTerminated { throw CancellationError() }
+
     // Deduplicate in-flight requests
     if let existingTask = currentFetchTask {
       return try await awaitShared(existingTask)
@@ -871,6 +914,7 @@ public final class DataSource<Value: Sendable>: Sendable {
 
   func startAutoRefresh(immediate: Bool) {
     guard let interval = autoRefreshInterval,
+      !isTerminated,
       !autoRefreshPaused,
       autoRefreshTask == nil,
       activeSubscriberCount > 0
