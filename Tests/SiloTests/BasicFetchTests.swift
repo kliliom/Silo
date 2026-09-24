@@ -254,4 +254,33 @@ struct BasicFetchTests {
     #expect(first == 0)
     #expect(second == 1)
   }
+
+  /// Verifies that cancelling the *calling* task makes `refresh()` throw `CancellationError`
+  /// promptly, while the shared fetch keeps running and other callers still receive its value.
+  @Test("Cancelling the caller stops its wait without cancelling the shared fetch")
+  func callerCancellationDoesNotCancelSharedFetch() async throws {
+    let fetchStarted = Semaphore(value: 0)
+    let source = dataSource {
+      await fetchStarted.signal()
+      try await Task.sleep(for: .milliseconds(200))
+      return "data"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .build()
+
+    let cancelled = Task { try await source.refresh() }
+    await fetchStarted.wait()
+    let joiner = Task { try await source.refresh() }
+    try await Task.sleep(for: .milliseconds(10))
+
+    let start = ContinuousClock.now
+    cancelled.cancel()
+    await #expect(throws: CancellationError.self) { try await cancelled.value }
+    #expect(ContinuousClock.now - start < .milliseconds(150))
+
+    #expect(try await joiner.value == "data")
+  }
 }
