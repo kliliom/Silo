@@ -25,3 +25,21 @@ actor Semaphore {
     }
   }
 }
+
+/// Thread-safe counter for tracking fetch and handler invocations in tests.
+actor Counter {
+  private(set) var value = 0
+
+  func increment() {
+    value += 1
+  }
+}
+
+/// Thread-safe ordered log for recording which values a fetch received.
+actor Recorder<Element: Sendable> {
+  private(set) var items: [Element] = []
+
+  func append(_ item: Element) {
+    items.append(item)
+  }
+}

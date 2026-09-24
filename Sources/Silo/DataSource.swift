@@ -685,8 +685,8 @@ public final class DataSource<Value: Sendable>: Sendable {
               // A cancellation surfacing from a hook (e.g. via cancelRefresh) is a
               // deliberate caller action, not a hook failure — propagate it bare so
               // the catch below bypasses onError and the cache is preserved.
-              if error is CancellationError {
-                throw error
+              if isCancellation(error) {
+                throw CancellationError()
               }
               throw BeforeFetchError(underlyingError: error)
             }
@@ -737,8 +737,10 @@ public final class DataSource<Value: Sendable>: Sendable {
       } catch {
         // Cancellation is a deliberate caller action, not a fetch failure —
         // it bypasses onError so the default .clear cannot wipe the cache.
-        if error is CancellationError {
-          throw error
+        // Checking the task too catches fetches that report cancellation with their
+        // own error type (URLSession throws URLError(.cancelled)).
+        if isCancellation(error) {
+          throw CancellationError()
         }
         let action = await errorHandler(error)
         switch action {
@@ -786,6 +788,10 @@ public final class DataSource<Value: Sendable>: Sendable {
       do {
         return try await fetch()
       } catch {
+        // Cancellation ends the retry loop outright; the retry handler never sees it
+        if isCancellation(error) {
+          throw CancellationError()
+        }
         if let handler = retryErrorHandler, case .stop = await handler(error) {
           throw error
         }
@@ -878,4 +884,13 @@ public final class DataSource<Value: Sendable>: Sendable {
       startAutoRefresh(immediate: false)
     }
   }
+}
+
+// MARK: - Cancellation helpers
+
+/// Whether an error thrown inside a task should be treated as cancellation. Besides
+/// `CancellationError`, this covers APIs that report cancellation with their own error type
+/// (URLSession throws `URLError(.cancelled)`) by also checking the current task.
+func isCancellation(_ error: Error) -> Bool {
+  error is CancellationError || Task.isCancelled
 }

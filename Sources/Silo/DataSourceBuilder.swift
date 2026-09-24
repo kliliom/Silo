@@ -570,6 +570,9 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   /// Use this for best-effort preparation work where a failure should not block the fetch —
   /// for example, refreshing a non-critical cache or logging.
   ///
+  /// Cancellation is the one exception: if the fetch is cancelled while the hook runs, the
+  /// cancellation propagates and the fetch does not proceed.
+  ///
   /// - Parameter handler: Async throwing closure to attempt before the fetch
   /// - Returns: The builder for method chaining
   ///
@@ -582,7 +585,15 @@ public final class DataSourceBuilder<Value: Sendable>: Sendable {
   /// .build()
   /// ```
   public func failableBeforeFetch(_ handler: @escaping @Sendable () async throws -> Void) -> Self {
-    beforeFetchHandlers.append { try? await handler() }
+    beforeFetchHandlers.append {
+      do {
+        try await handler()
+      } catch let error where isCancellation(error) {
+        throw CancellationError()
+      } catch {
+        // Best-effort hook: failures are deliberately ignored
+      }
+    }
     return self
   }
 
