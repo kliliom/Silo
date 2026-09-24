@@ -224,11 +224,7 @@ public final class DataSource<Value: Sendable>: Sendable {
       self.activeSubscriberCount += 1
       if self.activeSubscriberCount == 1 {
         // First subscriber arrived - check for pending lazy refresh
-        if let coordinator = self.dependencyCoordinator {
-          Task { @MainActor in
-            await coordinator.checkPendingLazyRefresh(dataSource: self)
-          }
-        }
+        self.dependencyCoordinator?.checkPendingLazyRefresh(dataSource: self)
 
         // Start auto-refresh if configured
         if self.autoRefreshInterval != nil {
@@ -347,11 +343,7 @@ public final class DataSource<Value: Sendable>: Sendable {
 
       self.activeSubscriberCount += 1
       if self.activeSubscriberCount == 1 {
-        if let coordinator = self.dependencyCoordinator {
-          Task { @MainActor in
-            await coordinator.checkPendingLazyRefresh(dataSource: self)
-          }
-        }
+        self.dependencyCoordinator?.checkPendingLazyRefresh(dataSource: self)
         if self.autoRefreshInterval != nil {
           self.startAutoRefresh(immediate: true)
         }

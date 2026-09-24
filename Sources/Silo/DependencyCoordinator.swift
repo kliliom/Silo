@@ -6,7 +6,7 @@ protocol DependencyCoordinating: Sendable {
 
   func start<T: Sendable>(dataSource: DataSource<T>)
   func stopObserving()
-  func checkPendingLazyRefresh<T: Sendable>(dataSource: DataSource<T>) async
+  func checkPendingLazyRefresh<T: Sendable>(dataSource: DataSource<T>)
   func markRefreshCompleted(upTo version: Int)
 }
 
@@ -18,8 +18,14 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
   var dependency: (repeat DataSourceDependency<each Dependency>)
   var valueStore: ValueStore
   var hasPendingLazyRefresh: Bool = false
+  // Whether any emission folded into the pending lazy refresh asked for `clear`
+  var pendingLazyClear: Bool = false
   var valueVersion: Int = 0
+  // Highest dependency version a successful fetch has covered
+  var lastCompletedVersion: Int = 0
   var observerTasks: [Task<Void, Never>] = []
+  // The dependency-triggered refresh in progress; a newer emission supersedes it
+  var refreshTask: Task<Void, Never>?
 
   init(dependency: repeat DataSourceDependency<each Dependency>) {
     self.dependency = (repeat each dependency)
@@ -31,6 +37,7 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
   deinit {
     // Safety net for when the owning DataSource is deallocated without terminate()
     for task in observerTasks { task.cancel() }
+    refreshTask?.cancel()
   }
 
   func updateValue<T: Sendable>(
@@ -63,20 +70,49 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
   func stopObserving() {
     for task in observerTasks { task.cancel() }
     observerTasks.removeAll()
+    refreshTask?.cancel()
+    refreshTask = nil
   }
 
-  func checkPendingLazyRefresh<T: Sendable>(dataSource: DataSource<T>) async {
+  func checkPendingLazyRefresh<T: Sendable>(dataSource: DataSource<T>) {
     guard hasPendingLazyRefresh, value != nil else { return }
+    let clear = pendingLazyClear
     hasPendingLazyRefresh = false
-    _ = try? await dataSource.refresh()
+    pendingLazyClear = false
+    scheduleRefresh(dataSource: dataSource, clear: clear)
   }
 
   func markRefreshCompleted(upTo version: Int) {
+    lastCompletedVersion = max(lastCompletedVersion, version)
     // Only clear the pending flag if no dependency emitted while the fetch was in
     // flight — a mid-fetch emission was not covered by that fetch and must still
     // trigger a refresh when the next subscriber arrives.
     guard version == valueVersion else { return }
     hasPendingLazyRefresh = false
+    pendingLazyClear = false
+  }
+
+  /// Refreshes in response to a dependency change without blocking the observer loop, so
+  /// further emissions keep flowing — with debounce configured, rapid emissions supersede
+  /// each other and coalesce into one fetch of the latest value.
+  private func scheduleRefresh<T: Sendable>(dataSource: DataSource<T>, clear: Bool) {
+    refreshTask?.cancel()
+    refreshTask = Task { [weak self, weak dataSource] in
+      guard let dataSource else { return }
+      do {
+        _ = try await dataSource.refresh(clear: clear)
+        // The refresh may have joined a fetch that started before this emission and so
+        // fetched stale dependency values; follow up until a fetch covers the latest one.
+        // Stop when a refresh completes no fetch (a TTL or throttle window answered it).
+        while let self, self.lastCompletedVersion < self.valueVersion {
+          let before = self.lastCompletedVersion
+          _ = try await dataSource.refresh()
+          if self.lastCompletedVersion == before { break }
+        }
+      } catch {
+        // Superseded, cancelled, or failed — onError has already handled real failures
+      }
+    }
   }
 
   private func startObserver<T: Sendable, D: Sendable>(
@@ -95,10 +131,11 @@ final class DependencyCoordinator<each Dependency: Sendable>: DependencyCoordina
         let shouldRefresh = dataSource.shouldRefreshForPolicy(source.policy)
 
         if shouldRefresh, self.value != nil {
-          _ = try? await dataSource.refresh(clear: source.clear)
+          self.scheduleRefresh(dataSource: dataSource, clear: source.clear)
         } else if source.policy == .lazy, !dataSource.hasActiveSubscribers {
           // Lazy policy without subscribers - mark for refresh when subscriber arrives
           self.hasPendingLazyRefresh = true
+          self.pendingLazyClear = self.pendingLazyClear || source.clear
         }
       }
     }

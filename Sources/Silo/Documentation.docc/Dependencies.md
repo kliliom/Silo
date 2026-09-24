@@ -19,7 +19,7 @@ let postsSource = dataSource(selectedUserID.dependency(.eager)) { userID in
 .build()
 ```
 
-Without dependencies, you'd have to observe `selectedUserID` yourself, cancel any in-flight request, and manually call `refresh()`. Silo handles all of that.
+Without dependencies, you'd have to observe `selectedUserID` yourself, make sure a fetch already in flight for the old value doesn't leave stale data behind, and manually call `refresh()`. Silo handles all of that: if a fetch started before the dependency changed, a follow-up fetch for the new value runs once it finishes.
 
 ## Declaring a Dependency
 
@@ -213,7 +213,7 @@ let resultsSource = dataSource(searchQuery.dependency(.lazy)) { query in
 .build()
 ```
 
-When `searchQuery` emits, Silo triggers a refresh, but the debounce delays execution until 300ms of silence — preventing a fetch on every keystroke.
+When `searchQuery` emits, Silo triggers a refresh, but the debounce delays execution until 300ms of silence. Each new emission supersedes the pending one, so a burst of keystrokes results in a single fetch for the final query.
 
 ## The Dependency Lifecycle
 
