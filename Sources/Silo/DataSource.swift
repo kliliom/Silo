@@ -90,15 +90,18 @@ public final class DataSource<Value: Sendable>: Sendable {
   var valueWithStateContinuations: [UUID: AsyncStream<DataSourceValueWithState<Value>>.Continuation] = [:]
   internal var activeSubscriberCount: Int = 0
 
-  // In-flight request tracking
+  // In-flight request tracking. The ID identifies the fetch that owns `currentFetchTask`
+  // so a finishing fetch only clears its own tracking.
   var currentFetchTask: Task<Value, Error>?
+  var currentFetchID: Int = 0
+  var lastFetchID: Int = 0
 
   // Timer state — deadlines use ContinuousClock so wall-clock changes
   // (NTP corrections, manual time adjustments) cannot shift them
   var ttlExpiryTime: ContinuousClock.Instant?
   var throttleExpiryTime: ContinuousClock.Instant?
   var ttlExpiryTask: Task<Void, Never>?
-  var debounceTask: Task<Void, Never>?
+  var debounceTask: Task<Void, Error>?
   // Monotonic: bumping it supersedes every caller waiting in the debounce stage.
   // Never reset — reusing a value would let a superseded caller through.
   var debounceCounter: Int = 0
@@ -385,6 +388,9 @@ public final class DataSource<Value: Sendable>: Sendable {
   ///
   /// On error, `onError` decides whether to keep or clear the cache. The error is always rethrown.
   ///
+  /// Cancelling the calling task makes this call throw `CancellationError` right away. A fetch
+  /// shared with other callers keeps running for them; use ``cancelRefresh(clear:)`` to stop it.
+  ///
   /// - Parameter clear: If `true`, clears the cache before fetching, bypassing TTL. Default: `false`.
   /// - Returns: The fetched value.
   /// - Throws: Rethrows errors from prerequisites, `beforeFetch` hooks, or the fetch closure.
@@ -415,10 +421,11 @@ public final class DataSource<Value: Sendable>: Sendable {
       debounceCounter += 1
       let currentCounter = debounceCounter
 
-      debounceTask = Task {
+      let task = Task<Void, Error> {
         try? await Task.sleep(for: debounceDuration, tolerance: self.debounceTolerance)
       }
-      await debounceTask?.value
+      debounceTask = task
+      try await awaitShared(task)
 
       guard currentCounter == debounceCounter else {
         throw CancellationError()
@@ -660,7 +667,7 @@ public final class DataSource<Value: Sendable>: Sendable {
   func performFetch() async throws -> Value {
     // Deduplicate in-flight requests
     if let existingTask = currentFetchTask {
-      return try await existingTask.value
+      return try await awaitShared(existingTask)
     }
 
     // The throttle window starts only when a fetch actually begins — callers that
@@ -669,11 +676,18 @@ public final class DataSource<Value: Sendable>: Sendable {
       throttleExpiryTime = ContinuousClock.now.advanced(by: throttleDuration)
     }
 
+    lastFetchID += 1
+    let fetchID = lastFetchID
+    currentFetchID = fetchID
+
     isRefreshing = true
     emitState()
     emitValueWithState()
 
     let fetchTask = Task<Value, Error> {
+      // Tracking is cleared by the task itself, not by its callers: a caller may stop
+      // waiting (its own task was cancelled) while the fetch keeps running for others.
+      defer { finishFetch(id: fetchID) }
       do {
         if !beforeFetchHandlers.isEmpty {
           try await withThrowingTaskGroup(of: Void.self) { group in
@@ -759,22 +773,14 @@ public final class DataSource<Value: Sendable>: Sendable {
     }
 
     currentFetchTask = fetchTask
-
-    do {
-      let value = try await fetchTask.value
-      finishFetch(fetchTask)
-      return value
-    } catch {
-      finishFetch(fetchTask)
-      throw error
-    }
+    return try await awaitShared(fetchTask)
   }
 
-  /// Clears in-flight tracking for a finished fetch task. Guarded by identity: a fetch
+  /// Clears in-flight tracking for a finished fetch. Guarded by identity: a fetch
   /// cancelled via `cancelRefresh()` can resume after a newer fetch has already started,
   /// and must not clobber the newer task's tracking or its `isRefreshing` state.
-  private func finishFetch(_ fetchTask: Task<Value, Error>) {
-    guard currentFetchTask == fetchTask else { return }
+  private func finishFetch(id: Int) {
+    guard currentFetchTask != nil, currentFetchID == id else { return }
     currentFetchTask = nil
     isRefreshing = false
     emitState()
@@ -896,4 +902,52 @@ public final class DataSource<Value: Sendable>: Sendable {
 /// (URLSession throws `URLError(.cancelled)`) by also checking the current task.
 func isCancellation(_ error: Error) -> Bool {
   error is CancellationError || Task.isCancelled
+}
+
+/// Awaits a task shared between several callers, but stops waiting with `CancellationError`
+/// as soon as the *calling* task is cancelled. The shared task itself keeps running.
+func awaitShared<T: Sendable>(_ task: Task<T, Error>) async throws -> T {
+  let waiter = SharedTaskWaiter<T>()
+  return try await withTaskCancellationHandler {
+    try await withCheckedThrowingContinuation { continuation in
+      waiter.install(continuation)
+      Task {
+        waiter.resume(with: await task.result)
+      }
+    }
+  } onCancel: {
+    waiter.resume(with: .failure(CancellationError()))
+  }
+}
+
+/// Resume-once bridge between a shared task's result and the caller's cancellation, whichever
+/// comes first. Either side may arrive before the continuation is installed.
+private final class SharedTaskWaiter<T: Sendable>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var continuation: CheckedContinuation<T, Error>?
+  private var result: Result<T, Error>?
+
+  func install(_ continuation: CheckedContinuation<T, Error>) {
+    lock.lock()
+    if let result {
+      lock.unlock()
+      continuation.resume(with: result)
+      return
+    }
+    self.continuation = continuation
+    lock.unlock()
+  }
+
+  func resume(with result: Result<T, Error>) {
+    lock.lock()
+    guard self.result == nil else {
+      lock.unlock()
+      return
+    }
+    self.result = result
+    let continuation = self.continuation
+    self.continuation = nil
+    lock.unlock()
+    continuation?.resume(with: result)
+  }
 }
