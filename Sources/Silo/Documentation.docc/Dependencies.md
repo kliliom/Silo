@@ -93,6 +93,16 @@ Without `clear: true`, the previous user's posts remain visible while the new us
 | On change | Previous data shown during fetch | Empty value shown during fetch |
 | Best for | Smooth transitions (similar data) | Hard context switches (unrelated data) |
 
+## Bypassing TTL and Throttle on Change
+
+A dependency-triggered refresh goes through the same TTL and throttle gates as a manual one. With `.ttl(.seconds(300))`, switching users inside that window keeps serving the previous user's data. Pass `invalidate: true` to drop the TTL and throttle windows whenever the dependency changes, so the new value is always fetched:
+
+```swift
+selectedUserID.dependency(.eager, invalidate: true)
+```
+
+Unlike `clear: true`, the previous data stays visible until the new fetch lands. `invalidate` applies to every policy: with `.manual`, the change fetches nothing by itself, but the next `refresh()` bypasses the TTL window.
+
 ## Multiple Dependencies
 
 Pass multiple dependencies to observe several upstream streams simultaneously. The fetch closure receives all values as parameters:

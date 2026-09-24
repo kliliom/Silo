@@ -804,6 +804,64 @@ struct DependencyTests {
     manualContinuation.finish()
   }
 
+  /// Verifies `invalidate: true`: a dependency change inside the TTL window fetches for the new
+  /// value, while the default keeps serving the value fetched for the old one.
+  @Test("invalidate: true bypasses TTL on dependency change; the default does not")
+  func invalidateBypassesTTL() async throws {
+    for invalidate in [false, true] {
+      let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+      let source = dataSource(stream.dependency(.eager, invalidate: invalidate)) { value in
+        "user-\(value)"
+      } onError: { _ in
+        .keep
+      } emptyValue: {
+        "empty"
+      }
+      .ttl(.seconds(60))
+      .build()
+
+      continuation.yield(1)
+      try await Task.sleep(for: .milliseconds(50))
+      continuation.yield(2)
+      try await Task.sleep(for: .milliseconds(50))
+
+      let value = try await source.refresh()
+      #expect(value == (invalidate ? "user-2" : "user-1"), "invalidate: \(invalidate)")
+      continuation.finish()
+    }
+  }
+
+  /// Verifies that `invalidate: true` also applies to `.manual` dependencies: the change does not
+  /// fetch by itself, but the next manual `refresh()` bypasses the TTL window.
+  @Test("invalidate: true with a manual dependency makes the next refresh fetch")
+  func invalidateWithManualPolicy() async throws {
+    let fetchCount = Counter()
+    let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+    let source = dataSource(stream.dependency(.manual, invalidate: true)) { value in
+      await fetchCount.increment()
+      return "user-\(value)"
+    } onError: { _ in
+      .keep
+    } emptyValue: {
+      "empty"
+    }
+    .ttl(.seconds(60))
+    .build()
+
+    continuation.yield(1)
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(try await source.refresh() == "user-1")
+    #expect(try await source.refresh() == "user-1")  // TTL hit
+    #expect(await fetchCount.value == 1)
+
+    continuation.yield(2)
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(await fetchCount.value == 1)  // manual: no automatic fetch
+    #expect(try await source.refresh() == "user-2")
+    #expect(await fetchCount.value == 2)
+    continuation.finish()
+  }
+
   /// Verifies that a pending lazy refresh honours the dependency's `clear:` flag when the first
   /// subscriber arrives: the empty value is emitted before the new fetch lands.
   @Test("Pending lazy refresh honours clear:")

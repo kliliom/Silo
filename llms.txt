@@ -188,7 +188,7 @@ let resultsSource = dataSource(
 ```
 
 **Dependency method:**
-- `AsyncStream.dependency(_:clear:)` — Convert AsyncStream to DataSourceDependency
+- `AsyncStream.dependency(_:clear:invalidate:)` — Convert AsyncStream to DataSourceDependency; `invalidate: true` makes dependency changes bypass TTL/throttle
 
 ## Examples
 
