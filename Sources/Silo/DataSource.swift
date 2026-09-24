@@ -441,6 +441,10 @@ public final class DataSource<Value: Sendable>: Sendable {
           guard generation == waitGeneration else {
             throw CancellationError()
           }
+        } else if let inFlight = currentFetchTask {
+          // The window was opened by the fetch still in flight — its result is fresher
+          // than the cache, so join it instead of dropping to the stale value
+          return try await awaitShared(inFlight)
         } else {
           return cachedValue
         }
