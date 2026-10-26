@@ -831,6 +831,36 @@ struct DependencyTests {
     }
   }
 
+  /// Verifies that a dependency change during an in-flight fetch is fetched for, with or without
+  /// `invalidate`: the stale fetch must not open a TTL window that answers the follow-up refresh.
+  @Test("Dependency change during an in-flight fetch is not served from a TTL window")
+  func dependencyChangeMidFetchWithTTL() async throws {
+    for invalidate in [false, true] {
+      let fetched = Recorder<Int>()
+      let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+      let source = dataSource(stream.dependency(.eager, invalidate: invalidate)) { value in
+        await fetched.append(value)
+        try await Task.sleep(for: .milliseconds(100))
+        return "user-\(value)"
+      } onError: { _ in
+        .keep
+      } emptyValue: {
+        "empty"
+      }
+      .ttl(.seconds(60))
+      .build()
+
+      continuation.yield(1)
+      try await Task.sleep(for: .milliseconds(20))
+      continuation.yield(2)  // while the fetch for 1 is in flight
+      try await Task.sleep(for: .milliseconds(400))
+
+      #expect(try await source.refresh() == "user-2", "invalidate: \(invalidate)")
+      #expect(await fetched.items == [1, 2], "invalidate: \(invalidate)")
+      continuation.finish()
+    }
+  }
+
   /// Verifies that `invalidate: true` also applies to `.manual` dependencies: the change does not
   /// fetch by itself, but the next manual `refresh()` bypasses the TTL window.
   @Test("invalidate: true with a manual dependency makes the next refresh fetch")
