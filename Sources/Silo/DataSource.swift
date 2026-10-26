@@ -795,8 +795,11 @@ public final class DataSource<Value: Sendable>: Sendable {
           emitValueWithState()
         }
 
-        // Start TTL timer
-        startTTLTimer()
+        // A dependency that changed mid-fetch makes this value stale on arrival — don't open a
+        // TTL window for it, or the follow-up refresh for the new value would be answered from cache
+        if (dependencyCoordinator?.valueVersion ?? 0) == dependencyVersion {
+          startTTLTimer()
+        }
 
         // Reset the auto-refresh cadence: the next automatic tick fires a full
         // interval after this fetch instead of on the old schedule, which could
